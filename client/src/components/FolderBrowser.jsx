@@ -140,13 +140,6 @@ function FolderBrowser({ onSelectFolder, onClose }) {
             Go Up
           </button>
           <button
-            className="btn btn-secondary"
-            onClick={loadHomeDirectories}
-            style={{ flex: 1 }}
-          >
-            Quick Access
-          </button>
-          <button
             className="btn btn-primary"
             onClick={selectCurrentFolder}
             disabled={!currentPath}
@@ -196,10 +189,7 @@ function FolderBrowser({ onSelectFolder, onClose }) {
               >
                 <span style={{ fontSize: '1.2rem' }}>[DIR]</span>
                 <span 
-                  style={{ color: '#e0e0e0', flex: 1, cursor: 'pointer' }}
-                  onClick={() => browseDirectory(dir.path)}
-                  onMouseEnter={(e) => e.currentTarget.style.color = '#00ff00'}
-                  onMouseLeave={(e) => e.currentTarget.style.color = '#e0e0e0'}
+                  style={{ color: '#e0e0e0', flex: 1 }}
                 >
                   {dir.name}
                 </span>
@@ -217,13 +207,20 @@ function FolderBrowser({ onSelectFolder, onClose }) {
                 >
                   Select
                 </button>
-                <span 
-                  style={{ color: '#666', fontSize: '1rem', cursor: 'pointer' }}
-                  onClick={() => browseDirectory(dir.path)}
-                  title="Browse into this folder"
+                <button
+                  className="btn btn-secondary btn-small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    browseDirectory(dir.path);
+                  }}
+                  style={{ 
+                    padding: '0.25rem 0.75rem',
+                    fontSize: '0.75rem',
+                    whiteSpace: 'nowrap'
+                  }}
                 >
-                  &gt;
-                </span>
+                  Browse
+                </button>
               </div>
             ))
           )}
@@ -239,7 +236,7 @@ function FolderBrowser({ onSelectFolder, onClose }) {
           fontSize: '0.75rem',
           color: '#888'
         }}>
-          Click Select to choose a folder, or click &gt; to browse into it
+          Click Select to choose a folder, or click Browse to open it
         </div>
       </div>
     </div>
