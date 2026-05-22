@@ -1,124 +1,116 @@
 # RTMP Squid
 
-Web application for streaming video playlists to RTMP servers (Twitch, YouTube, AngelThump, etc).
+Web app for streaming video playlists to RTMP servers (AngelThump, Twitch, YouTube, …) as a **continuous 24/7 stream that never stops**.
 
-## Features
+## What's new
 
-- Scan folders for video files and create playlists
-- Smart shuffle (avoids repeating recently played videos)
-- Auto-loop playlists for 24/7 streaming
-- Drag-and-drop playlist reordering
-- Folder watching (auto-adds new files)
-- Configurable video/audio bitrate and resolution
-- Video fit modes (preserve aspect ratio or stretch to fill)
-- Real-time stream status monitoring
-- Filter small files (< 5MB)
+- **One auto-filling queue (VLC-simple).** Point it at a movie folder and it builds a never-ending random queue. As movies play they drop off the top; when fewer than 5 remain it auto-refills with more random picks. Drag to reorder, remove, search — then it just plays.
+- **Never-stopping stream.** A single persistent encoder holds the RTMP connection for the whole session. Movies are fed through a FIFO pipe one after another, so the connection is **never dropped between files**. During any gap a **standby slate** keeps the stream live.
+- **AV1 source files.** AV1-encoded inputs (in `.mp4`/`.mkv`/`.webm`) are decoded and transcoded to H.264 for the RTMP target. Mixed-codec / mixed-resolution / mixed-fps movies are normalised automatically.
+- **Authentication.** Every API + socket connection requires an access token.
+- **Filesystem confinement.** All browsing, scanning and streaming is restricted to a single configurable media directory.
+
+## How the continuous stream works
+
+```
+playlist file → feeder ffmpeg (normalise → H.264/AAC MPEG-TS) ─┐
+        next file → feeder ffmpeg ────────────────────────────┤→ FIFO → streamer ffmpeg (-c copy) → RTMP
+        standby slate → feeder ffmpeg ──────────────────────────┘     (one persistent connection)
+```
+
+- The **streamer** is started once and never restarts (with bounded auto-reconnect if the platform drops it).
+- **Feeders** are short-lived: one per file, plus a slate generator for idle periods. Each normalises its source to identical H.264/AAC parameters (`-bf 0` keeps timestamps monotonic across boundaries).
+- A held FIFO write handle means the streamer never sees end-of-file between feeders.
 
 ## Requirements
 
-- Node.js 18 or higher
-- FFmpeg 4.0 or higher
+- Node.js 18+
+- FFmpeg 4.0+ with `libx264`, `aac`, and (for AV1 inputs) an AV1 decoder such as `libdav1d`
 
-## Installation
+## Install (one command)
 
 ```bash
-npm install
-cd client && npm install
+./setup.sh        # or: npm run setup
 ```
+
+`setup.sh` is idempotent and does everything:
+- verifies Node ≥ 18 and FFmpeg with `libx264` (offers to install what's missing),
+- installs server + client dependencies and **builds the client**,
+- writes a `.env` with a freshly generated `AUTH_TOKEN` and sensible defaults,
+- creates your media directory,
+- prints the token and the exact SSH-tunnel command.
+
+Then start it:
+
+```bash
+npm start          # serves UI + API on 127.0.0.1:3001 (config from .env)
+```
+
+### Run it forever (auto-start on boot, auto-restart on crash)
+
+```bash
+./setup.sh --service     # installs + enables a systemd service named "rtmpsquid"
+# manage with: systemctl {status,restart,stop} rtmpsquid
+```
+
+### Reaching the dashboard
+
+The server binds to **127.0.0.1** by default. Tunnel in:
+
+```bash
+ssh -L 3001:127.0.0.1:3001 youruser@your-server
+# then open http://localhost:3001 and paste the AUTH_TOKEN from .env
+```
+
+Config lives in `.env` (see `.env.example`); edit it and restart. A real environment
+variable always overrides the file. For local development with hot reload: `npm run dev`.
+
+## Configuration (environment variables)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AUTH_TOKEN` | *(generated)* | Access token gating all API + socket access |
+| `MEDIA_ROOT` | `<repo>/media` | Only directory the app may browse/scan/stream into |
+| `LIBRARY_DIR` | = `MEDIA_ROOT` | Folder the auto-queue pulls random movies from (scanned recursively) |
+| `MIN_MOVIE_MB` | `5` | Ignore video files smaller than this (skips samples/junk) |
+| `QUEUE_MIN` | `5` | Refill the queue when fewer than this remain |
+| `QUEUE_TARGET` | `20` | Top the queue up to this many on refill |
+| `HOST` | `127.0.0.1` | Bind address (keep loopback unless fronted by a TLS proxy) |
+| `PORT` | `3001` | Listen port |
+| `ALLOWED_ORIGINS` | localhost:3000/3001/5173 | CORS / socket.io allow-list |
+| `SCAN_MAX_DEPTH` | `12` | Recursive scan depth limit |
 
 ## Usage
 
-Start the server and client:
+1. Put your movies in a folder under `MEDIA_ROOT`.
+2. Open **⚙ Settings → Movie library**, **Browse** to that folder, and **Use this folder**. A random queue fills automatically.
+3. Drag tracks to reorder, ✕ to remove, search to find one. **🔀 Shuffle** rebuilds a fresh random queue.
+4. In **⚙ Settings → Destination** set your RTMP URL + stream key (remembered for next time).
+5. **● Go Live** — the Now Playing bar shows the current movie, elapsed time, what's next, and a *STANDBY* badge if the slate ever fills a gap. It plays forever, refilling itself.
 
-```bash
-npm run dev
-```
+## Supported source formats
 
-This starts:
-- Backend server on http://localhost:3001
-- Frontend on http://localhost:5173
+`.mp4`, `.mkv`, `.webm`, `.mov`, `.avi`, `.flv`, `.wmv`, `.m4v`, `.mpg`, `.mpeg`, `.3gp`, `.ts`, `.m2ts`, `.ogv` — including AV1, H.264/HEVC, VP8/VP9 video.
 
-Open http://localhost:5173 in your browser.
+## RTMP services
 
-## Quick Start
+Default: `rtmp://ingest.angelthump.com/live`. Also works with Twitch (`rtmp://live.twitch.tv/app`), YouTube (`rtmp://a.rtmp.youtube.com/live2`), or any RTMP(S) ingest. Only `rtmp://` / `rtmps://` targets are accepted.
 
-1. Enter a folder path containing video files or click Browse
-2. Configure shuffle mode and file filters
-3. Click "Create Playlist"
-4. Enter your RTMP URL and stream key
-5. Adjust video/audio settings if needed
-6. Click "START STREAM"
+## Security model
 
-## Configuration
+- All `/api/*` (except `/api/ping`) and all socket connections require a bearer token.
+- Every user-supplied path is resolved and confined to `MEDIA_ROOT` (symlinks and `..` traversal rejected).
+- Stream targets are restricted to `rtmp://`/`rtmps://` (prevents ffmpeg from being coerced into writing local files).
+- ffmpeg is spawned with argument arrays (no shell), so file paths can't inject commands.
+- `helmet` security headers, CORS allow-list, rate limiting, recursive-scan depth/symlink guards, loopback binding.
 
-### Video Settings
-- **Resolution**: 720p, 1080p, 1440p
-- **Video Bitrate**: 2000k to 6000k
-- **Audio Bitrate**: 128k to 320k
-- **Video Fit**: Fit (adds black bars) or Stretch (fills screen)
-
-### Playlist Settings
-- **Shuffle Mode**: Sequential, Random, or Smart (no repeats for N movies)
-- **Auto-loop**: Restart playlist when finished
-- **Watch folder**: Automatically add new files
-- **Filter small files**: Ignore files under 5MB
-
-## Supported Formats
-
-`.mp4`, `.mkv`, `.avi`, `.mov`, `.flv`, `.wmv`, `.webm`, `.m4v`, `.mpg`, `.mpeg`, `.3gp`
-
-## RTMP Services
-
-Default RTMP URL: `rtmp://ingest.angelthump.com/live`
-
-Works with:
-- AngelThump
-- Twitch (`rtmp://live.twitch.tv/app`)
-- YouTube (`rtmp://a.rtmp.youtube.com/live2`)
-- Any custom RTMP server
-
-## Development
-
-Start in development mode:
-
-```bash
-npm run dev
-```
-
-Server code: `server/`
-Client code: `client/src/`
-
-## Platform Support
-
-- macOS
-- Linux (Ubuntu, Debian)
-- Windows
+> Note: the bundled Vite dev server has a known moderate advisory (esbuild GHSA-67mh-4wv8-2f99) that only affects `npm run dev`, not the production build. Keep dev on localhost.
 
 ## Troubleshooting
 
-### FFmpeg not found
-Install FFmpeg and ensure it's in your PATH:
-```bash
-# macOS
-brew install ffmpeg
-
-# Ubuntu/Debian
-sudo apt install ffmpeg
-
-# Windows
-Download from https://ffmpeg.org/download.html
-```
-
-### Port already in use
-Kill processes on ports 3001 or 5173, or change ports in:
-- Server: `server/index.js`
-- Client: `client/vite.config.js`
-
-### Stream not starting
-- Verify RTMP URL and stream key
-- Check FFmpeg installation
-- Ensure video files are readable
-- Check server logs for errors
+- **Can't log in:** check the server logs for the generated `AUTH_TOKEN`, or set one explicitly.
+- **"Access denied / outside the media directory":** the path isn't under `MEDIA_ROOT`.
+- **Stream won't start:** verify the RTMP URL/key and that FFmpeg is on `PATH`.
 
 ## License
 

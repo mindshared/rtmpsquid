@@ -1,171 +1,152 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# RTMP Squid — one-command setup for Linux/macOS.
+# Idempotent: safe to run again any time. Run `./setup.sh --service` to also
+# install a systemd service (Linux) that auto-starts on boot and restarts on crash.
+set -euo pipefail
 
-# RTMP Squid Setup Script for Linux/macOS
-# This script will install all dependencies and set up the application
+cd "$(dirname "$0")"
+ROOT="$(pwd)"
 
-set -e  # Exit on error
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+ok()   { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+die()  { echo -e "${RED}✗ $*${NC}" >&2; exit 1; }
+step() { echo -e "\n${BLUE}▶ $*${NC}"; }
 
-echo "🦑 RTMP Squid Setup Script"
-echo "=========================="
-echo ""
+WANT_SERVICE=0
+[ "${1:-}" = "--service" ] && WANT_SERVICE=1
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+echo "🦑 RTMP Squid setup"
+echo "==================="
 
-# Detect OS
-OS="unknown"
-if [[ "$OSTYPE" == "linux-gnu"* ]]; then
-    OS="linux"
-    if [ -f /etc/debian_version ]; then
-        DISTRO="debian"
-    elif [ -f /etc/redhat-release ]; then
-        DISTRO="redhat"
-    elif [ -f /etc/arch-release ]; then
-        DISTRO="arch"
-    else
-        DISTRO="unknown"
-    fi
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    OS="macos"
+# --- OS detection ---------------------------------------------------------
+OS="linux"; DISTRO="unknown"
+case "$OSTYPE" in
+  darwin*) OS="macos" ;;
+  linux*)  OS="linux"
+           if [ -f /etc/debian_version ]; then DISTRO="debian"
+           elif [ -f /etc/redhat-release ]; then DISTRO="redhat"
+           elif [ -f /etc/arch-release ]; then DISTRO="arch"; fi ;;
+esac
+
+# sudo only if not already root
+SUDO=""; [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+
+pkg_install() {
+  case "$DISTRO:$OS" in
+    debian:*) $SUDO apt-get update -y && $SUDO apt-get install -y "$@" ;;
+    redhat:*) $SUDO dnf install -y "$@" ;;
+    arch:*)   $SUDO pacman -S --noconfirm "$@" ;;
+    *:macos)  command -v brew >/dev/null 2>&1 || die "Homebrew not found — install from https://brew.sh"; brew install "$@" ;;
+    *) die "Unsupported distro — install '$*' manually." ;;
+  esac
+}
+
+# --- Node.js >= 18 --------------------------------------------------------
+step "Checking Node.js (>= 18)"
+need_node=1
+if command -v node >/dev/null 2>&1; then
+  major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"
+  if [ "$major" -ge 18 ]; then ok "Node $(node -v)"; need_node=0
+  else warn "Node $(node -v) is too old (need >= 18)"; fi
+else warn "Node.js not found"; fi
+if [ "$need_node" -eq 1 ]; then
+  if [ "$OS" = "macos" ]; then pkg_install node
+  elif [ "$DISTRO" = "debian" ]; then curl -fsSL https://deb.nodesource.com/setup_20.x | $SUDO -E bash - && $SUDO apt-get install -y nodejs
+  elif [ "$DISTRO" = "redhat" ]; then curl -fsSL https://rpm.nodesource.com/setup_20.x | $SUDO bash - && $SUDO dnf install -y nodejs
+  elif [ "$DISTRO" = "arch" ]; then pkg_install nodejs npm
+  else die "Install Node.js >= 18 from https://nodejs.org/ and re-run."; fi
+  ok "Node $(node -v) installed"
 fi
 
-echo "Detected OS: $OS"
-echo ""
+# --- FFmpeg (must support H.264 output) -----------------------------------
+# NB: capture output into vars and pattern-match — piping into `grep -q` would
+# SIGPIPE ffmpeg and trip `set -o pipefail` with a false negative.
+step "Checking FFmpeg (needs libx264)"
+if ! command -v ffmpeg >/dev/null 2>&1; then warn "FFmpeg not found"; pkg_install ffmpeg; fi
+command -v ffmpeg >/dev/null 2>&1 || die "FFmpeg still not available."
+ENC="$(ffmpeg -hide_banner -encoders 2>/dev/null || true)"
+DEC="$(ffmpeg -hide_banner -decoders 2>/dev/null || true)"
+VER="$(ffmpeg -version 2>/dev/null | sed -n '1s/.*version \([^ ]*\).*/\1/p' || true)"
+case "$ENC" in *libx264*) ok "FFmpeg ${VER:-?} with libx264" ;;
+  *) die "Your FFmpeg lacks libx264 (required to stream H.264). Install a full build." ;; esac
+case "$DEC" in *av1*|*AV1*) ok "AV1 decoding available" ;;
+  *) warn "No AV1 decoder — AV1 source files won't play (H.264/others still fine)" ;; esac
 
-# Check if Node.js is installed
-check_node() {
-    if command -v node &> /dev/null; then
-        NODE_VERSION=$(node -v)
-        echo -e "${GREEN}✓${NC} Node.js is installed: $NODE_VERSION"
-        return 0
-    else
-        echo -e "${RED}✗${NC} Node.js is not installed"
-        return 1
-    fi
-}
+# --- dependencies + build -------------------------------------------------
+step "Installing dependencies"
+npm install --no-audit --no-fund
+( cd client && npm install --no-audit --no-fund )
+ok "Dependencies installed"
 
-# Check if FFmpeg is installed
-check_ffmpeg() {
-    if command -v ffmpeg &> /dev/null; then
-        FFMPEG_VERSION=$(ffmpeg -version | head -n 1)
-        echo -e "${GREEN}✓${NC} FFmpeg is installed: $FFMPEG_VERSION"
-        return 0
-    else
-        echo -e "${RED}✗${NC} FFmpeg is not installed"
-        return 1
-    fi
-}
+step "Building the web client"
+npm run build >/dev/null
+[ -f client/dist/index.html ] || die "Client build did not produce client/dist/index.html"
+ok "Client built"
 
-# Install Node.js
-install_node() {
-    echo ""
-    echo "Installing Node.js..."
-    
-    if [ "$OS" = "macos" ]; then
-        if ! command -v brew &> /dev/null; then
-            echo "Installing Homebrew first..."
-            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-        fi
-        brew install node
-    elif [ "$OS" = "linux" ]; then
-        if [ "$DISTRO" = "debian" ]; then
-            curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-            sudo apt-get install -y nodejs
-        elif [ "$DISTRO" = "redhat" ]; then
-            curl -fsSL https://rpm.nodesource.com/setup_18.x | sudo bash -
-            sudo dnf install -y nodejs
-        elif [ "$DISTRO" = "arch" ]; then
-            sudo pacman -S --noconfirm nodejs npm
-        else
-            echo -e "${YELLOW}Please install Node.js manually from https://nodejs.org/${NC}"
-            exit 1
-        fi
-    fi
-}
+# --- .env (persistent config) --------------------------------------------
+step "Configuration (.env)"
+if [ -f .env ]; then
+  ok ".env already exists — leaving it untouched"
+else
+  TOKEN="$(node -e 'console.log(require("crypto").randomBytes(24).toString("base64url"))')"
+  MEDIA_ROOT_DEFAULT="${MEDIA_ROOT:-$ROOT/media}"
+  cat > .env <<EOF
+# RTMP Squid configuration (generated by setup.sh — edit freely, then restart)
+AUTH_TOKEN=$TOKEN
+HOST=127.0.0.1
+PORT=3001
+MEDIA_ROOT=$MEDIA_ROOT_DEFAULT
+LIBRARY_DIR=$MEDIA_ROOT_DEFAULT
+MIN_MOVIE_MB=5
+EOF
+  chmod 600 .env
+  ok "Wrote .env with a fresh AUTH_TOKEN"
+fi
+# shellcheck disable=SC1091
+set -a; . ./.env; set +a
+mkdir -p "$MEDIA_ROOT"; ok "Media root ready: $MEDIA_ROOT"
 
-# Install FFmpeg
-install_ffmpeg() {
-    echo ""
-    echo "Installing FFmpeg..."
-    
-    if [ "$OS" = "macos" ]; then
-        brew install ffmpeg
-    elif [ "$OS" = "linux" ]; then
-        if [ "$DISTRO" = "debian" ]; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
-        elif [ "$DISTRO" = "redhat" ]; then
-            sudo dnf install -y ffmpeg
-        elif [ "$DISTRO" = "arch" ]; then
-            sudo pacman -S --noconfirm ffmpeg
-        else
-            echo -e "${YELLOW}Please install FFmpeg manually from https://ffmpeg.org/${NC}"
-            exit 1
-        fi
-    fi
-}
+# --- optional systemd service --------------------------------------------
+if [ "$WANT_SERVICE" -eq 1 ]; then
+  step "Installing systemd service (auto-start + auto-restart)"
+  [ "$OS" = "linux" ] || die "--service is Linux-only."
+  command -v systemctl >/dev/null 2>&1 || die "systemd not available."
+  NODE_BIN="$(command -v node)"
+  UNIT=/etc/systemd/system/rtmpsquid.service
+  $SUDO tee "$UNIT" >/dev/null <<EOF
+[Unit]
+Description=RTMP Squid
+After=network-online.target
+Wants=network-online.target
 
-# Main installation flow
-echo "Checking prerequisites..."
-echo ""
+[Service]
+Type=simple
+WorkingDirectory=$ROOT
+EnvironmentFile=$ROOT/.env
+ExecStart=$NODE_BIN $ROOT/server/index.js
+Restart=always
+RestartSec=3
 
-NODE_INSTALLED=0
-FFMPEG_INSTALLED=0
-
-check_node && NODE_INSTALLED=1 || true
-check_ffmpeg && FFMPEG_INSTALLED=1 || true
-
-echo ""
-
-# Install missing dependencies
-if [ $NODE_INSTALLED -eq 0 ]; then
-    read -p "Node.js is not installed. Install it now? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        install_node
-    else
-        echo -e "${RED}Node.js is required. Please install it manually.${NC}"
-        exit 1
-    fi
+[Install]
+WantedBy=multi-user.target
+EOF
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable --now rtmpsquid
+  ok "Service 'rtmpsquid' installed and started (systemctl status rtmpsquid)"
 fi
 
-if [ $FFMPEG_INSTALLED -eq 0 ]; then
-    read -p "FFmpeg is not installed. Install it now? (y/n) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        install_ffmpeg
-    else
-        echo -e "${RED}FFmpeg is required. Please install it manually.${NC}"
-        exit 1
-    fi
+# --- done -----------------------------------------------------------------
+TOKEN_NOW="$(grep -E '^AUTH_TOKEN=' .env | cut -d= -f2-)"
+IP="$(curl -fsS --max-time 3 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}' || echo YOUR_SERVER)"
+echo -e "\n${GREEN}✓ Setup complete${NC}"
+echo "─────────────────────────────────────────────"
+if [ "$WANT_SERVICE" -eq 1 ]; then
+  echo "Running as a service. Manage with: systemctl {status,restart,stop} rtmpsquid"
+else
+  echo "Start it with:   npm start"
 fi
-
-echo ""
-echo "Installing RTMP Squid dependencies..."
-echo ""
-
-# Install server dependencies
-echo "📦 Installing server dependencies..."
-npm install
-
-# Install client dependencies
-echo ""
-echo "📦 Installing client dependencies..."
-cd client
-npm install
-cd ..
-
-echo ""
-echo -e "${GREEN}✓ Installation complete!${NC}"
-echo ""
-echo "To start the application:"
-echo "  npm run dev"
-echo ""
-echo "Then open your browser to:"
-echo "  http://localhost:3000"
-echo ""
-echo "🦑 Happy streaming!"
-
+echo "Access token:    $TOKEN_NOW"
+echo "Open the UI:     ssh -L ${PORT}:127.0.0.1:${PORT} $(whoami)@${IP}   then http://localhost:${PORT}"
+echo "Put movies in:   $MEDIA_ROOT   (or set LIBRARY_DIR in .env)"
+echo "─────────────────────────────────────────────"
