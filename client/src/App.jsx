@@ -1,128 +1,74 @@
-import { useState, useEffect } from 'react';
-import { io } from 'socket.io-client';
-import axios from 'axios';
-import UnifiedDashboard from './components/UnifiedDashboard';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { api, getToken, clearToken, connectSocket, setUnauthorizedHandler } from './api';
+import QueueView from './components/UnifiedDashboard';
 import Notification from './components/Notification';
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+import Login from './components/Login';
 
 function App() {
+  const [authed, setAuthed] = useState(false);
+  const [booting, setBooting] = useState(true);
   const [socket, setSocket] = useState(null);
-  const [activeStreams, setActiveStreams] = useState([]);
+  const [queue, setQueue] = useState(null);
+  const [streamStatus, setStreamStatus] = useState(null); // rich status from /api/streams
   const [notification, setNotification] = useState(null);
+  const streamingRef = useRef(false);
+
+  const notify = useCallback((message, type = 'success') => setNotification({ message, type, id: Date.now() }), []);
 
   useEffect(() => {
-    const newSocket = io(API_URL);
-    setSocket(newSocket);
+    setUnauthorizedHandler(() => { clearToken(); setAuthed(false); });
+    (async () => {
+      if (getToken()) { try { await api.get('/api/auth/check'); setAuthed(true); } catch { clearToken(); } }
+      setBooting(false);
+    })();
+  }, []);
 
-    newSocket.on('connect', () => {
-      console.log('Connected to server');
-    });
-
-    newSocket.on('stream:started', (data) => {
-      showNotification('Stream started successfully', 'success');
-      fetchActiveStreams();
-    });
-
-    newSocket.on('stream:ended', (data) => {
-      showNotification('Stream ended', 'success');
-      fetchActiveStreams();
-    });
-
-    newSocket.on('stream:error', (data) => {
-      showNotification(`Stream error: ${data.error}`, 'error');
-      fetchActiveStreams();
-    });
-
-    newSocket.on('stream:progress', (data) => {
-      setActiveStreams(prev => 
-        prev.map(stream => 
-          stream.id === data.streamId 
-            ? { ...stream, progress: data }
-            : stream
-        )
-      );
-    });
-
-    return () => newSocket.close();
+  const fetchStatus = useCallback(async () => {
+    try { const { data } = await api.get('/api/streams'); setStreamStatus(data[0] || null); } catch {}
   }, []);
 
   useEffect(() => {
-    fetchActiveStreams();
-  }, []);
+    if (!authed) return;
+    const s = connectSocket();
+    setSocket(s);
+    api.get('/api/queue').then(({ data }) => { setQueue(data); streamingRef.current = data.streaming; }).catch(() => {});
+    fetchStatus();
 
-  const fetchActiveStreams = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/streams`);
-      setActiveStreams(response.data);
-    } catch (error) {
-      console.error('Error fetching streams:', error);
-    }
-  };
+    s.on('queue:updated', (q) => {
+      setQueue(q);
+      if (q.streaming !== streamingRef.current) { streamingRef.current = q.streaming; fetchStatus(); }
+    });
+    s.on('stream:progress', (d) => setStreamStatus((cur) => (cur ? { ...cur, progress: d, status: cur.status === 'standby' ? 'standby' : 'streaming' } : cur)));
+    s.on('stream:standby', () => setStreamStatus((cur) => (cur ? { ...cur, status: 'standby' } : cur)));
+    s.on('stream:reconnecting', (d) => { notify(`Reconnecting (attempt ${d.attempt})…`, 'error'); setStreamStatus((cur) => (cur ? { ...cur, status: 'reconnecting' } : cur)); });
+    s.on('stream:fileskipped', (d) => notify(`Skipped unreadable file: ${d.file || 'unknown'}`, 'error'));
+    s.on('stream:error', (d) => { notify(`Stream error: ${d.error}`, 'error'); setStreamStatus(null); });
+    s.on('stream:stopped', () => { setStreamStatus(null); });
 
-  const handleStartStream = async (rtmpUrl, streamKey, loop, advancedOptions, selectedPlaylist) => {
-    if (!selectedPlaylist) {
-      showNotification('Please select a playlist first', 'error');
-      return;
-    }
+    return () => s.close();
+  }, [authed, fetchStatus, notify]);
 
-    try {
-      const response = await axios.post(
-        `${API_URL}/api/playlists/${selectedPlaylist.id}/stream`,
-        {
-          rtmpUrl,
-          streamKey,
-          ...advancedOptions
-        }
-      );
-      showNotification('Stream started!', 'success');
-      fetchActiveStreams();
-      return response.data;
-    } catch (error) {
-      showNotification(`Error: ${error.response?.data?.error || error.message}`, 'error');
-      throw error;
-    }
-  };
+  const logout = () => { clearToken(); setAuthed(false); if (socket) socket.close(); };
 
-  const handleStopStream = async (streamId) => {
-    try {
-      await axios.post(`${API_URL}/api/stream/stop/${streamId}`);
-      showNotification('Stream stopped', 'success');
-      fetchActiveStreams();
-    } catch (error) {
-      showNotification('Error stopping stream', 'error');
-    }
-  };
-
-  const showNotification = (message, type) => {
-    setNotification({ message, type });
-    setTimeout(() => setNotification(null), 5000);
-  };
+  if (booting) return <div className="login-screen"><p style={{ color: '#888' }}>Loading…</p></div>;
+  if (!authed) return <Login onAuthed={() => setAuthed(true)} />;
 
   return (
     <div className="app">
-      <header className="header" style={{ marginBottom: '1.5rem', paddingBottom: '1rem' }}>
-        <h1 style={{ fontSize: '2rem', marginBottom: '0.25rem' }}>🦑 RTMP SQUID</h1>
-        <p style={{ fontSize: '0.9rem' }}>Stream video playlists to RTMP servers</p>
-      </header>
-
-      <UnifiedDashboard
+      <QueueView
         socket={socket}
-        onStartStream={handleStartStream}
-        onStopStream={handleStopStream}
-        activeStreams={activeStreams}
+        queue={queue}
+        streamStatus={streamStatus}
+        setQueue={setQueue}
+        notify={notify}
+        onLogout={logout}
+        refreshStatus={fetchStatus}
       />
-
       {notification && (
-        <Notification
-          message={notification.message}
-          type={notification.type}
-          onClose={() => setNotification(null)}
-        />
+        <Notification key={notification.id} message={notification.message} type={notification.type} onClose={() => setNotification(null)} />
       )}
     </div>
   );
 }
 
 export default App;
-
