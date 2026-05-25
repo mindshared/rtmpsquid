@@ -1,0 +1,38 @@
+services:
+  rtmpsquid:
+    image: rtmpsquid:latest
+    container_name: rtmpsquid
+    restart: unless-stopped
+
+    # Build from Dockerfile in this directory
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # Port configuration
+    ports:
+      - "3001:3001"
+
+    # Environment variables
+    environment:
+      - HOST=0.0.0.0
+      - PORT=3001
+      - MEDIA_ROOT=/media
+      - LIBRARY_DIR=/media/library
+      - ALLOWED_ORIGINS=http://localhost:3001
+      - SCAN_MAX_DEPTH=12
+      - QUEUE_MIN=5
+      - QUEUE_TARGET=20
+      - MIN_MOVIE_MB=5
+
+    # Volume mounts
+    volumes:
+      # Media files directory
+      - ./data/media:/media
+      # Configuration file with AUTH_TOKEN
+      - ./.env:/app/.env:ro
+
+    # Optional: Resource limits (adjust based on your system)
+    # mem_limit: 4G
+    # mem_reservation: 512M
+    # cpus: '2.0'
