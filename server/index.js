@@ -23,7 +23,8 @@ const httpServer = createServer(app);
 const corsOptions = {
   origin(origin, cb) {
     if (!origin || config.allowedOrigins.includes(origin)) return cb(null, true);
-    return cb(new Error('Not allowed by CORS'));
+    return cb(null, false); // deny without throwing a 500
+
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
 };
@@ -38,7 +39,7 @@ app.use('/api', rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, l
 
 const streamManager = new StreamManager(io);
 
-const h = (fn) => (req, res) => Promise.resolve(fn(req, res)).catch((err) => {
+const h = (fn) => (req, res) => Promise.resolve().then(() => fn(req, res)).catch((err) => {
   res.status(err.status || 500).json({ error: err.message });
 });
 
@@ -96,6 +97,11 @@ app.post('/api/queue/start', h(async (req, res) => {
 }));
 
 app.post('/api/queue/stop', h(async (req, res) => { await streamManager.stopQueue(); res.json({ success: true }); }));
+
+app.post('/api/queue/next', h(async (req, res) => { res.json(streamManager.skipCurrent()); }));
+
+// Unknown API path → JSON 404 (not the SPA HTML). Must sit after all /api routes.
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ---- static client ----
 app.use(express.static(path.join(__dirname, '../client/dist')));

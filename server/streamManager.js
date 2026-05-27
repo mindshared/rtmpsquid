@@ -18,6 +18,8 @@ export class StreamManager {
     this.currentFile = null;
     this.stream = null;                           // ContinuousStream | null
     this.rtmpUrl = null;
+    this.order = 'shuffle';                        // 'shuffle' | 'sequential'
+    this._seqIndex = 0;                            // cursor into the sorted library for sequential play
     this.minMovieMB = config.minMovieBytes / (1024 * 1024); // smallest file allowed in the library
 
     // Auto-load the default library on boot so it "just plays" out of the box.
@@ -54,8 +56,9 @@ export class StreamManager {
     this.minMovieMB = mb;
     const files = await this.scanFolderForVideos(folder, { recursive: true, minSizeBytes: Math.round(mb * 1024 * 1024) });
     this.library = { folder, files };
-    // Build a fresh random queue from the new library.
+    // Build a fresh queue from the new library (reset the sequential cursor too).
     this.queue = [];
+    this._seqIndex = 0;
     this._refill();
     this.io.emit('library:updated', this.getLibrary());
     this.io.emit('queue:updated', this.getQueue());
@@ -78,22 +81,40 @@ export class StreamManager {
     return a;
   }
 
-  // Keep the queue topped up: when fewer than queueMin remain, add random movies
-  // (preferring ones not already queued) up to queueTarget.
+  // Library in a stable, human order (natural sort so "Ep 2" precedes "Ep 10").
+  _sortedLibrary() {
+    return [...this.library.files].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+  }
+
+  // Keep the queue topped up: when fewer than queueMin remain, add movies up to
+  // queueTarget — random (no near-term repeats) or in library order, per this.order.
   _refill() {
     if (!this.library.files.length) return;
     if (this.queue.length >= config.queueMin) return;
+
+    if (this.order === 'sequential') {
+      const sorted = this._sortedLibrary();
+      while (this.queue.length < config.queueTarget) {
+        this.queue.push(sorted[this._seqIndex % sorted.length]);
+        this._seqIndex = (this._seqIndex + 1) % sorted.length;
+      }
+      return;
+    }
+
     const inUse = new Set([...this.queue, ...(this.currentFile ? [this.currentFile] : [])]);
     for (const f of this._shuffle(this.library.files.filter((f) => !inUse.has(f)))) {
       if (this.queue.length >= config.queueTarget) break;
       this.queue.push(f);
     }
-    // Small library (< queueMin unique): allow replays so it still loops.
-    if (this.queue.length < config.queueMin) {
+    // Small library (fewer unique files than queueTarget): allow replays so the
+    // queue still fills and loops, consistent with the sequential branch.
+    while (this.queue.length < config.queueTarget) {
+      const before = this.queue.length;
       for (const f of this._shuffle(this.library.files)) {
         if (this.queue.length >= config.queueTarget) break;
         this.queue.push(f);
       }
+      if (this.queue.length === before) break; // safety: no progress (can't happen with a non-empty library)
     }
   }
 
@@ -126,7 +147,7 @@ export class StreamManager {
   }
 
   removeFromQueue(index) {
-    if (index < 0 || index >= this.queue.length) return this.getQueue();
+    if (!Number.isInteger(index) || index < 0 || index >= this.queue.length) return this.getQueue();
     this.queue.splice(index, 1);
     this._refill();
     this.io.emit('queue:updated', this.getQueue());
@@ -134,7 +155,10 @@ export class StreamManager {
   }
 
   reorderQueue(from, to) {
-    if (from == null || to == null || from === to) return this.getQueue();
+    from = Number(from); to = Number(to);
+    const n = this.queue.length;
+    if (!Number.isInteger(from) || !Number.isInteger(to) || from === to ||
+        from < 0 || from >= n || to < 0 || to >= n) return this.getQueue();
     const [m] = this.queue.splice(from, 1);
     this.queue.splice(to, 0, m);
     this.io.emit('queue:updated', this.getQueue());
@@ -148,12 +172,16 @@ export class StreamManager {
     cs.on('standby', (d) => this.io.emit('stream:standby', d));
     cs.on('reconnecting', (d) => this.io.emit('stream:reconnecting', d));
     cs.on('fileskipped', (d) => this.io.emit('stream:fileskipped', d));
-    cs.on('error', (d) => { this.stream = null; this.currentFile = null; this.io.emit('stream:error', d); this.io.emit('queue:updated', this.getQueue()); });
-    cs.on('stopped', () => { this.stream = null; this.currentFile = null; this.io.emit('stream:stopped', {}); this.io.emit('queue:updated', this.getQueue()); });
+    cs.on('error', (d) => { this.stream = null; this.currentFile = null; this.rtmpUrl = null; this.io.emit('stream:error', d); this.io.emit('queue:updated', this.getQueue()); });
+    cs.on('stopped', () => { this.stream = null; this.currentFile = null; this.rtmpUrl = null; this.io.emit('stream:stopped', {}); this.io.emit('queue:updated', this.getQueue()); });
   }
 
   async startQueue(rtmpUrl, options = {}) {
     if (this.stream) throw Object.assign(new Error('Already streaming'), { status: 400 });
+    // Apply the requested playback order and rebuild the queue fresh from it.
+    this.order = options.order === 'sequential' ? 'sequential' : 'shuffle';
+    this._seqIndex = 0;
+    this.queue = [];
     this._refill();
     if (!this.queue.length) throw Object.assign(new Error('Queue is empty — set a library folder with movies'), { status: 400 });
 
@@ -187,7 +215,14 @@ export class StreamManager {
   async stopQueue() {
     if (this.stream) { await this.stream.stop(); this.stream = null; }
     this.currentFile = null;
+    this.rtmpUrl = null;
     this.io.emit('queue:updated', this.getQueue());
+  }
+
+  // Skip the currently-playing file and advance to the next one.
+  skipCurrent() {
+    if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
+    return { success: this.stream.skip() };
   }
 
   getActiveStreams() {
