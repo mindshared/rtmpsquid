@@ -54,7 +54,10 @@ function normalizeEncode(adv = {}) {
   return {
     preset: a.preset || 'veryfast',
     profile: a.profile || 'high',          // 'none'/'' -> omitted
-    tune: a.tune || '',                     // '' -> omitted
+    // zerolatency: emit each frame as soon as it's encoded (no lookahead/thread
+    // buffering) so output to the FIFO is smooth at the -re pace rather than
+    // bursty — keeps RTMP delivery even, which platforms' players need.
+    tune: a.tune || 'zerolatency',         // 'none'/'' -> omitted
     level: a.level || '',                   // '' -> omitted
     pixfmt: a.pixfmt || 'yuv420p',
     gopSeconds: num(a.gopSeconds, 2) > 0 ? num(a.gopSeconds, 2) : 2,
@@ -287,7 +290,7 @@ export class ContinuousStream extends EventEmitter {
       // re-check for new content periodically.
       const { width: W, height: H, fps } = this.opt;
       const drawtext = SLATE_FONT
-        ? `,drawtext=fontfile='${SLATE_FONT}':text='RTMP SQUID — STANDBY':fontcolor=white:fontsize=${Math.round(H / 16)}:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.4:boxborderw=20`
+        ? `,drawtext=fontfile='${SLATE_FONT}':text='STANDBY':fontcolor=white:fontsize=${Math.round(H / 16)}:x=(w-text_w)/2:y=(h-text_h)/2:box=1:boxcolor=black@0.4:boxborderw=20`
         : '';
       inputArgs = [
         '-re',

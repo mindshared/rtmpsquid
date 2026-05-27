@@ -30,7 +30,7 @@ const LIB_PAGE = 200; // library rows per page (Prev/Next pages through the rest
 // Advanced-mode encode overrides. Defaults mirror the platform-safe server
 // encode (Twitch/Kick/AngelThump). Blank maxrate/bufsize = derived from bitrate.
 const ADV_DEFAULTS = {
-  preset: 'veryfast', profile: 'high', tune: '', level: '', pixfmt: 'yuv420p',
+  preset: 'veryfast', profile: 'high', tune: 'zerolatency', level: '', pixfmt: 'yuv420p',
   gopSeconds: '2', bframes: '0', sceneCut: '0',
   rateControl: 'cbr', crf: '23', maxrate: '', bufsize: '',
   audioCodec: 'aac', audioSampleRate: '48000', extraArgs: '',
