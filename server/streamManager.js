@@ -225,6 +225,16 @@ export class StreamManager {
     return { success: this.stream.skip() };
   }
 
+  // Live settings update — applies at the next file boundary so the RTMP
+  // connection stays up. Connection params (rtmpUrl/streamKey) are intentionally
+  // not accepted here; changing destination needs a stop/start.
+  updateSettings(options = {}) {
+    if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
+    if (options.order === 'sequential' || options.order === 'shuffle') this.order = options.order;
+    this.stream.updateOptions(options);
+    return { applied: true, appliesAtNextTrack: true };
+  }
+
   getActiveStreams() {
     return this.stream ? [this.stream.getStatus()] : [];
   }

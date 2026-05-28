@@ -100,6 +100,14 @@ app.post('/api/queue/stop', h(async (req, res) => { await streamManager.stopQueu
 
 app.post('/api/queue/next', h(async (req, res) => { res.json(streamManager.skipCurrent()); }));
 
+// Live settings push — applies at the next track boundary without dropping
+// the RTMP connection. Strips rtmpUrl/streamKey to make accidental ingest
+// changes impossible via this path.
+app.post('/api/queue/settings', h((req, res) => {
+  const { rtmpUrl, streamKey, ...opts } = req.body || {};
+  res.json(streamManager.updateSettings(opts));
+}));
+
 // Unknown API path → JSON 404 (not the SPA HTML). Must sit after all /api routes.
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

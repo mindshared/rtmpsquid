@@ -81,6 +81,7 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   const [resolution, setResolution] = useState(ls('rs_res', '1920x1080'));
   const [videoFit, setVideoFit] = useState(ls('rs_fit', 'fit'));
   const [bitrate, setBitrate] = useState(toM(ls('rs_vb', '3M')));
+  const [rateControl, setRateControl] = useState(ls('rs_rc', 'cbr'));
   const [audioBitrate, setAudioBitrate] = useState(ls('rs_ab', '160k'));
   const [fps, setFps] = useState(ls('rs_fps', '30'));
   const [audioChannels, setAudioChannels] = useState(ls('rs_ac', '2'));
@@ -157,15 +158,35 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
     else if (d.source === 'queue') reorder(d.fromIndex, targetIndex);
   };
 
+  // Build the encode-options payload shared by /start and the live /settings push.
+  // In basic mode we still send `advanced: { rateControl }` so the basic CBR/VBR
+  // toggle reaches the server's encode pipeline (which only reads from .advanced).
+  const buildEncodePayload = () => {
+    const payload = { resolution, bitrate, audioBitrate, audioChannels: parseInt(audioChannels, 10), fps: parseInt(fps, 10), order, fit: videoFit };
+    payload.advanced = advancedMode ? adv : { rateControl };
+    return payload;
+  };
+
   const goLive = async () => {
     if (!streamKey.trim()) { notify?.('Add your stream key in Settings', 'error'); setDrawerOpen(true); return; }
-    const payload = { rtmpUrl, streamKey, resolution, bitrate, audioBitrate, audioChannels: parseInt(audioChannels, 10), fps: parseInt(fps, 10), order, fit: videoFit };
-    if (advancedMode) payload.advanced = adv;
+    const payload = { rtmpUrl, streamKey, ...buildEncodePayload() };
     await call(() => api.post('/api/queue/start', payload), 'Go live');
     notify?.('Going live');
   };
   const stop = () => call(() => api.post('/api/queue/stop'), 'Stop');
   const skipNext = () => call(() => api.post('/api/queue/next'), 'Next');
+
+  // While streaming, push setting changes to the server so they apply at the
+  // next file boundary — no reconnect to the RTMP ingest. Debounced so dragging
+  // a slider doesn't spam the endpoint.
+  useEffect(() => {
+    if (!streaming) return;
+    const t = setTimeout(() => {
+      api.post('/api/queue/settings', buildEncodePayload()).catch(() => {});
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, resolution, bitrate, rateControl, audioBitrate, audioChannels, fps, order, videoFit, advancedMode, adv]);
 
   const hasLibrary = queue && queue.libraryCount > 0;
 
@@ -333,8 +354,17 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
                   </select>
                 </label>
                 <label className="field">Video bitrate
-                  <select value={bitrate} onChange={(e) => save('rs_vb', e.target.value, setBitrate)}>{['1.4M','1.6M','1.8M','2M','3M','4M','5M','6M'].map((b) => <option key={b} value={b}>{b}</option>)}</select>
+                  <input list="dl-vb" value={bitrate} onChange={(e) => save('rs_vb', e.target.value, setBitrate)} placeholder="e.g. 1.2M or 1500k" />
+                  <datalist id="dl-vb">{['1M','1.2M','1.4M','1.6M','1.8M','2M','3M','4M','5M','6M'].map((b) => <option key={b} value={b} />)}</datalist>
                 </label>
+                {!advancedMode && (
+                  <label className="field">Rate control
+                    <select value={rateControl} onChange={(e) => save('rs_rc', e.target.value, setRateControl)}>
+                      <option value="cbr">CBR (steady)</option>
+                      <option value="vbr">VBR (capped)</option>
+                    </select>
+                  </label>
+                )}
                 <label className="field">Audio bitrate
                   <select value={audioBitrate} onChange={(e) => save('rs_ab', e.target.value, setAudioBitrate)}>{['64k','96k','112k','128k','160k','192k','256k','320k'].map((b) => <option key={b} value={b}>{b}</option>)}</select>
                 </label>
@@ -415,7 +445,7 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
                   <datalist id="dl-arate">{['44100','48000'].map((x) => <option key={x} value={x} />)}</datalist>
                 </>
               ) : (
-                <p className="hint">Off — using the platform-safe encode (x264 High, CBR, 2s keyframes, yuv420p, 48 kHz AAC) tuned for Twitch / Kick / AngelThump.</p>
+                <p className="hint">Off — using the platform-safe encode (x264 High, 2s keyframes, yuv420p, 48 kHz AAC) tuned for Twitch / Kick / AngelThump. Rate control honours the basic CBR/VBR toggle above.</p>
               )}
             </div>
           </aside>

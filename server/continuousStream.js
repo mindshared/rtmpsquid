@@ -126,6 +126,30 @@ export class ContinuousStream extends EventEmitter {
     this._consecFails = 0;         // consecutive instant feeder failures (for backoff)
   }
 
+  // Hot-swap encode settings without touching the running feeder or streamer.
+  // Builders read from this.opt / this.enc each time _feedNext spawns a feeder,
+  // so the new values pick up at the next file boundary. The persistent RTMP
+  // connection (and the FIFO writer fd) are untouched, so viewers don't reconnect.
+  // Caller passes the same options shape as the constructor; rtmpUrl is ignored
+  // here (changing the ingest destination requires a full restart).
+  updateOptions(options = {}) {
+    const cur = this.opt;
+    const [w, h] = String(options.resolution || `${cur.width}x${cur.height}`).split('x').map((n) => parseInt(n, 10));
+    const nextOpt = {
+      width: w || cur.width,
+      height: h || cur.height,
+      fps: parseInt(options.fps, 10) || cur.fps,
+      videoBitrate: options.bitrate || cur.videoBitrate,
+      audioBitrate: options.audioBitrate || cur.audioBitrate,
+      audioChannels: parseInt(options.audioChannels, 10) || cur.audioChannels,
+      fit: options.fit || cur.fit,
+      startTime: cur.startTime,
+    };
+    const nextEnc = normalizeEncode(options.advanced);
+    this.opt = nextOpt;
+    this.enc = nextEnc;
+  }
+
   // ---- ffmpeg argument builders -------------------------------------------
 
   _videoFilter() {
