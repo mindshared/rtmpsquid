@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # RTMP Squid — one-command setup for Linux/macOS.
-# Idempotent: safe to run again any time. Run `./setup.sh --service` to also
-# install a systemd service (Linux) that auto-starts on boot and restarts on crash.
+# Idempotent: safe to run again any time. On Linux with systemd this installs a
+# managed service by default (auto-start on boot, single instance, clean restart).
+# Pass --no-service to skip the service and just configure for manual `npm start`.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -13,8 +14,15 @@ warn() { echo -e "${YELLOW}!${NC} $*"; }
 die()  { echo -e "${RED}✗ $*${NC}" >&2; exit 1; }
 step() { echo -e "\n${BLUE}▶ $*${NC}"; }
 
-WANT_SERVICE=0
-[ "${1:-}" = "--service" ] && WANT_SERVICE=1
+# Default ON for Linux+systemd, OFF elsewhere. --no-service overrides; --service
+# is kept for backward compatibility (and explicit opt-in on edge cases).
+WANT_SERVICE=auto
+for arg in "$@"; do
+  case "$arg" in
+    --service)    WANT_SERVICE=1 ;;
+    --no-service) WANT_SERVICE=0 ;;
+  esac
+done
 
 echo "🦑 RTMP Squid setup"
 echo "==================="
@@ -107,13 +115,41 @@ fi
 set -a; . ./.env; set +a
 mkdir -p "$MEDIA_ROOT"; ok "Media root ready: $MEDIA_ROOT"
 
-# --- optional systemd service --------------------------------------------
+# --- service install / single-instance enforcement -----------------------
+# Resolve auto: Linux with systemd => install, otherwise skip.
+if [ "$WANT_SERVICE" = "auto" ]; then
+  if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1; then WANT_SERVICE=1
+  else WANT_SERVICE=0; fi
+fi
+
 if [ "$WANT_SERVICE" -eq 1 ]; then
-  step "Installing systemd service (auto-start + auto-restart)"
+  step "Installing systemd service (single instance, auto-start, auto-restart)"
   [ "$OS" = "linux" ] || die "--service is Linux-only."
   command -v systemctl >/dev/null 2>&1 || die "systemd not available."
   NODE_BIN="$(command -v node)"
   UNIT=/etc/systemd/system/rtmpsquid.service
+
+  # Kill any stray node started by hand (npm start, nohup, etc) so the service
+  # has exclusive ownership of :$PORT. systemd's own instance (in the unit's
+  # cgroup) is left alone. Pattern matches both absolute paths and bare argv.
+  STRAYS=""
+  for pid in $(pgrep -f 'node .*server/index.js' 2>/dev/null || true); do
+    # Skip the systemd-managed instance.
+    if grep -q 'rtmpsquid.service' "/proc/$pid/cgroup" 2>/dev/null; then continue; fi
+    # Only kill if cwd or argv actually points at THIS repo (avoid killing other
+    # node apps that happen to match the loose pattern).
+    cwd="$(readlink -f /proc/$pid/cwd 2>/dev/null || true)"
+    if [ "$cwd" = "$ROOT" ] || grep -q "$ROOT/server/index.js" "/proc/$pid/cmdline" 2>/dev/null; then
+      STRAYS="$STRAYS $pid"
+    fi
+  done
+  if [ -n "$STRAYS" ]; then
+    for pid in $STRAYS; do kill -TERM "$pid" 2>/dev/null || true; done
+    sleep 1
+    for pid in $STRAYS; do kill -KILL "$pid" 2>/dev/null || true; done
+    ok "Cleared stray manual node processes:$STRAYS"
+  fi
+
   $SUDO tee "$UNIT" >/dev/null <<EOF
 [Unit]
 Description=RTMP Squid
@@ -125,6 +161,11 @@ Type=simple
 WorkingDirectory=$ROOT
 EnvironmentFile=$ROOT/.env
 ExecStart=$NODE_BIN $ROOT/server/index.js
+# Graceful stop: SIGTERM gives the server time to drain ffmpeg cleanly (matches
+# the in-app feeder shutdown path), then SIGKILL as a backstop.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
 Restart=always
 RestartSec=3
 
@@ -132,8 +173,11 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   $SUDO systemctl daemon-reload
-  $SUDO systemctl enable --now rtmpsquid
-  ok "Service 'rtmpsquid' installed and started (systemctl status rtmpsquid)"
+  $SUDO systemctl enable rtmpsquid >/dev/null 2>&1 || true
+  # Restart (not just start) so re-running setup picks up code/unit changes
+  # and replaces any running instance — single source of truth.
+  $SUDO systemctl restart rtmpsquid
+  ok "Service 'rtmpsquid' active (systemctl status rtmpsquid)"
 fi
 
 # --- done -----------------------------------------------------------------
@@ -143,6 +187,7 @@ echo -e "\n${GREEN}✓ Setup complete${NC}"
 echo "─────────────────────────────────────────────"
 if [ "$WANT_SERVICE" -eq 1 ]; then
   echo "Running as a service. Manage with: systemctl {status,restart,stop} rtmpsquid"
+  echo "Logs:            journalctl -u rtmpsquid -f"
 else
   echo "Start it with:   npm start"
 fi
