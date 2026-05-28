@@ -359,7 +359,19 @@ export class ContinuousStream extends EventEmitter {
     this.stopping = true;
     this.status = 'stopping';
 
-    try { this.feeder?.kill('SIGKILL'); } catch {}
+    // Graceful feeder shutdown: SIGINT lets ffmpeg flush buffers and release file
+    // handles/threads before we force-kill. SIGKILL'd ffmpegs in a tight cycle
+    // leave kernel cleanup pending, which surfaces as spurious "unreadable file"
+    // errors on the next start. SIGKILL falls back if the feeder doesn't exit.
+    const dyingFeeder = this.feeder;
+    if (dyingFeeder) {
+      this.feeder = null;
+      try { dyingFeeder.kill('SIGINT'); } catch {}
+      await new Promise((resolve) => {
+        const t = setTimeout(() => { try { dyingFeeder.kill('SIGKILL'); } catch {} resolve(); }, 1500);
+        dyingFeeder.on('exit', () => { clearTimeout(t); resolve(); });
+      });
+    }
 
     // Closing the held writer fd lets the streamer drain and exit cleanly,
     // which sends a proper RTMP end-of-stream to the platform.
