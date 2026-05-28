@@ -81,7 +81,6 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   const [resolution, setResolution] = useState(ls('rs_res', '1920x1080'));
   const [videoFit, setVideoFit] = useState(ls('rs_fit', 'fit'));
   const [bitrate, setBitrate] = useState(toM(ls('rs_vb', '3M')));
-  const [rateControl, setRateControl] = useState(ls('rs_rc', 'cbr'));
   const [audioBitrate, setAudioBitrate] = useState(ls('rs_ab', '160k'));
   const [fps, setFps] = useState(ls('rs_fps', '30'));
   const [audioChannels, setAudioChannels] = useState(ls('rs_ac', '2'));
@@ -89,12 +88,18 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   const [minSizeMB, setMinSizeMB] = useState(ls('rs_minmb', '5'));
   const save = (k, v, set) => { localStorage.setItem(k, v); set(v); };
 
-  // Advanced encoder overrides.
-  const [advancedMode, setAdvancedMode] = useState(ls('rs_advmode', '0') === '1');
-  const [adv, setAdv] = useState(() => { try { return { ...ADV_DEFAULTS, ...JSON.parse(ls('rs_adv', '{}')) }; } catch { return { ...ADV_DEFAULTS }; } });
+  // Single authoritative encoder settings (the basic/advanced split was retired
+  // — every field is always visible, and platform-safe defaults still apply for
+  // anything left at its default). One-shot migration seeds adv.rateControl from
+  // the legacy rs_rc key written by an earlier two-mode build.
+  const [adv, setAdv] = useState(() => {
+    let stored = {}; try { stored = JSON.parse(ls('rs_adv', '{}')) || {}; } catch {}
+    const legacyRc = ls('rs_rc', null);
+    if (legacyRc && !stored.rateControl) stored.rateControl = legacyRc;
+    return { ...ADV_DEFAULTS, ...stored };
+  });
   const setAdvField = (k, v) => { const next = { ...adv, [k]: v }; setAdv(next); localStorage.setItem('rs_adv', JSON.stringify(next)); };
   const resetAdv = () => { setAdv({ ...ADV_DEFAULTS }); localStorage.setItem('rs_adv', JSON.stringify(ADV_DEFAULTS)); };
-  const toggleAdvanced = (on) => { setAdvancedMode(on); localStorage.setItem('rs_advmode', on ? '1' : '0'); };
 
   const fetchLibrary = () => api.get('/api/library').then(({ data }) => setLibrary(data)).catch(() => {});
   useEffect(() => { fetchLibrary(); }, []);
@@ -159,13 +164,15 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   };
 
   // Build the encode-options payload shared by /start and the live /settings push.
-  // In basic mode we still send `advanced: { rateControl }` so the basic CBR/VBR
-  // toggle reaches the server's encode pipeline (which only reads from .advanced).
-  const buildEncodePayload = () => {
-    const payload = { resolution, bitrate, audioBitrate, audioChannels: parseInt(audioChannels, 10), fps: parseInt(fps, 10), order, fit: videoFit };
-    payload.advanced = advancedMode ? adv : { rateControl };
-    return payload;
-  };
+  // Everything the encoder cares about ships in one shape: the basic stream
+  // options at the top level, the encoder knobs in `advanced`.
+  const buildEncodePayload = () => ({
+    resolution, bitrate, audioBitrate,
+    audioChannels: parseInt(audioChannels, 10),
+    fps: parseInt(fps, 10),
+    order, fit: videoFit,
+    advanced: adv,
+  });
 
   const goLive = async () => {
     if (!streamKey.trim()) { notify?.('Add your stream key in Settings', 'error'); setDrawerOpen(true); return; }
@@ -186,7 +193,7 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
     }, 500);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, resolution, bitrate, rateControl, audioBitrate, audioChannels, fps, order, videoFit, advancedMode, adv]);
+  }, [streaming, resolution, bitrate, audioBitrate, audioChannels, fps, order, videoFit, adv]);
 
   const hasLibrary = queue && queue.libraryCount > 0;
 
@@ -331,7 +338,8 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
             </div>
 
             <div className="drawer-section">
-              <h3>Quality</h3>
+              <h3>Stream settings</h3>
+              <p className="hint">Defaults are platform-safe for Twitch / Kick / AngelThump (x264 High, CBR, 2s keyframes, yuv420p, 48 kHz AAC). Leave Max rate / Buf size blank to derive them from the bitrate. While streaming, changes apply at the next track boundary — no reconnect.</p>
               <div className="grid-2">
                 <label className="field">Resolution
                   <select value={resolution} onChange={(e) => save('rs_res', e.target.value, setResolution)}>
@@ -348,105 +356,78 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
                     <option value="24">24 fps</option><option value="30">30 fps</option><option value="60">60 fps</option>
                   </select>
                 </label>
-                <label className="field">Audio channels
-                  <select value={audioChannels} onChange={(e) => save('rs_ac', e.target.value, setAudioChannels)}>
-                    <option value="2">Stereo</option><option value="1">Mono</option>
+                <label className="field">Playback order
+                  <select value={order} onChange={(e) => save('rs_order', e.target.value, setOrder)}>
+                    <option value="shuffle">Shuffle</option><option value="sequential">In order (A→Z)</option>
                   </select>
                 </label>
                 <label className="field">Video bitrate
                   <input list="dl-vb" value={bitrate} onChange={(e) => save('rs_vb', e.target.value, setBitrate)} placeholder="e.g. 1.2M or 1500k" />
                   <datalist id="dl-vb">{['1M','1.2M','1.4M','1.6M','1.8M','2M','3M','4M','5M','6M'].map((b) => <option key={b} value={b} />)}</datalist>
                 </label>
-                {!advancedMode && (
-                  <label className="field">Rate control
-                    <select value={rateControl} onChange={(e) => save('rs_rc', e.target.value, setRateControl)}>
-                      <option value="cbr">CBR (steady)</option>
-                      <option value="vbr">VBR (capped)</option>
-                    </select>
-                  </label>
-                )}
+                <label className="field">Rate control
+                  <select value={adv.rateControl} onChange={(e) => setAdvField('rateControl', e.target.value)}>
+                    <option value="cbr">CBR (steady)</option><option value="vbr">VBR (capped)</option><option value="crf">CRF (quality)</option>
+                  </select>
+                </label>
+                <label className="field">Max rate
+                  <input value={adv.maxrate} onChange={(e) => setAdvField('maxrate', e.target.value)} placeholder="= bitrate" />
+                </label>
+                <label className="field">Buf size
+                  <input value={adv.bufsize} onChange={(e) => setAdvField('bufsize', e.target.value)} placeholder="= 2× bitrate" />
+                </label>
+                <label className="field">CRF
+                  <input type="number" min="0" max="51" value={adv.crf} onChange={(e) => setAdvField('crf', e.target.value)} />
+                </label>
+                <label className="field">Keyframe (sec)
+                  <input type="number" min="0.5" step="0.5" value={adv.gopSeconds} onChange={(e) => setAdvField('gopSeconds', e.target.value)} />
+                </label>
+                <label className="field">Preset
+                  <input list="dl-preset" value={adv.preset} onChange={(e) => setAdvField('preset', e.target.value)} />
+                </label>
+                <label className="field">Profile
+                  <input list="dl-profile" value={adv.profile} onChange={(e) => setAdvField('profile', e.target.value)} placeholder="high / main / none" />
+                </label>
+                <label className="field">Tune
+                  <input list="dl-tune" value={adv.tune} onChange={(e) => setAdvField('tune', e.target.value)} placeholder="(none)" />
+                </label>
+                <label className="field">Level
+                  <input value={adv.level} onChange={(e) => setAdvField('level', e.target.value)} placeholder="(auto) e.g. 4.1" />
+                </label>
+                <label className="field">B-frames
+                  <input type="number" min="0" value={adv.bframes} onChange={(e) => setAdvField('bframes', e.target.value)} />
+                </label>
+                <label className="field">Scene-cut
+                  <input type="number" value={adv.sceneCut} onChange={(e) => setAdvField('sceneCut', e.target.value)} />
+                </label>
+                <label className="field">Pixel format
+                  <input list="dl-pixfmt" value={adv.pixfmt} onChange={(e) => setAdvField('pixfmt', e.target.value)} />
+                </label>
+                <label className="field">Audio channels
+                  <select value={audioChannels} onChange={(e) => save('rs_ac', e.target.value, setAudioChannels)}>
+                    <option value="2">Stereo</option><option value="1">Mono</option>
+                  </select>
+                </label>
                 <label className="field">Audio bitrate
                   <select value={audioBitrate} onChange={(e) => save('rs_ab', e.target.value, setAudioBitrate)}>{['64k','96k','112k','128k','160k','192k','256k','320k'].map((b) => <option key={b} value={b}>{b}</option>)}</select>
                 </label>
-                <label className="field">Playback order
-                  <select value={order} onChange={(e) => save('rs_order', e.target.value, setOrder)}>
-                    <option value="shuffle">Shuffle</option><option value="sequential">In order (A→Z)</option>
-                  </select>
+                <label className="field">Audio codec
+                  <input list="dl-acodec" value={adv.audioCodec} onChange={(e) => setAdvField('audioCodec', e.target.value)} />
+                </label>
+                <label className="field">Audio rate
+                  <input list="dl-arate" value={adv.audioSampleRate} onChange={(e) => setAdvField('audioSampleRate', e.target.value)} />
                 </label>
               </div>
-            </div>
-
-            <div className="drawer-section">
-              <div className="lib-head">
-                <h3>Advanced encoder</h3>
-                <label className="adv-toggle">
-                  <input type="checkbox" checked={advancedMode} onChange={(e) => toggleAdvanced(e.target.checked)} />
-                  Advanced mode
-                </label>
-              </div>
-              {advancedMode ? (
-                <>
-                  <p className="hint">Overrides the platform-safe defaults. Blank Max rate / Buf size = derived from the bitrate. Bad values can break the encode (every file gets skipped), so reset if unsure.</p>
-                  <div className="grid-2">
-                    <label className="field">Preset
-                      <input list="dl-preset" value={adv.preset} onChange={(e) => setAdvField('preset', e.target.value)} />
-                    </label>
-                    <label className="field">Profile
-                      <input list="dl-profile" value={adv.profile} onChange={(e) => setAdvField('profile', e.target.value)} placeholder="high / main / none" />
-                    </label>
-                    <label className="field">Tune
-                      <input list="dl-tune" value={adv.tune} onChange={(e) => setAdvField('tune', e.target.value)} placeholder="(none)" />
-                    </label>
-                    <label className="field">Level
-                      <input value={adv.level} onChange={(e) => setAdvField('level', e.target.value)} placeholder="(auto) e.g. 4.1" />
-                    </label>
-                    <label className="field">Rate control
-                      <select value={adv.rateControl} onChange={(e) => setAdvField('rateControl', e.target.value)}>
-                        <option value="cbr">CBR</option><option value="vbr">VBR (capped)</option><option value="crf">CRF</option>
-                      </select>
-                    </label>
-                    <label className="field">CRF
-                      <input type="number" min="0" max="51" value={adv.crf} onChange={(e) => setAdvField('crf', e.target.value)} />
-                    </label>
-                    <label className="field">Max rate
-                      <input value={adv.maxrate} onChange={(e) => setAdvField('maxrate', e.target.value)} placeholder="= bitrate" />
-                    </label>
-                    <label className="field">Buf size
-                      <input value={adv.bufsize} onChange={(e) => setAdvField('bufsize', e.target.value)} placeholder="= 2× bitrate" />
-                    </label>
-                    <label className="field">Keyframe (sec)
-                      <input type="number" min="0.5" step="0.5" value={adv.gopSeconds} onChange={(e) => setAdvField('gopSeconds', e.target.value)} />
-                    </label>
-                    <label className="field">B-frames
-                      <input type="number" min="0" value={adv.bframes} onChange={(e) => setAdvField('bframes', e.target.value)} />
-                    </label>
-                    <label className="field">Scene-cut
-                      <input type="number" value={adv.sceneCut} onChange={(e) => setAdvField('sceneCut', e.target.value)} />
-                    </label>
-                    <label className="field">Pixel format
-                      <input list="dl-pixfmt" value={adv.pixfmt} onChange={(e) => setAdvField('pixfmt', e.target.value)} />
-                    </label>
-                    <label className="field">Audio codec
-                      <input list="dl-acodec" value={adv.audioCodec} onChange={(e) => setAdvField('audioCodec', e.target.value)} />
-                    </label>
-                    <label className="field">Audio rate
-                      <input list="dl-arate" value={adv.audioSampleRate} onChange={(e) => setAdvField('audioSampleRate', e.target.value)} />
-                    </label>
-                  </div>
-                  <label className="field">Extra ffmpeg args <span className="muted">(output options — power user)</span>
-                    <input value={adv.extraArgs} onChange={(e) => setAdvField('extraArgs', e.target.value)} placeholder={'-x264-params "keyint=60:scenecut=0" -aq-mode 3'} />
-                  </label>
-                  <button className="btn btn-secondary btn-small" onClick={resetAdv}>Reset to platform defaults</button>
-                  <datalist id="dl-preset">{['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow'].map((x) => <option key={x} value={x} />)}</datalist>
-                  <datalist id="dl-profile">{['baseline','main','high','high10','none'].map((x) => <option key={x} value={x} />)}</datalist>
-                  <datalist id="dl-tune">{['film','animation','grain','stillimage','fastdecode','zerolatency'].map((x) => <option key={x} value={x} />)}</datalist>
-                  <datalist id="dl-pixfmt">{['yuv420p','yuv422p','yuv444p'].map((x) => <option key={x} value={x} />)}</datalist>
-                  <datalist id="dl-acodec">{['aac'].map((x) => <option key={x} value={x} />)}</datalist>
-                  <datalist id="dl-arate">{['44100','48000'].map((x) => <option key={x} value={x} />)}</datalist>
-                </>
-              ) : (
-                <p className="hint">Off — using the platform-safe encode (x264 High, 2s keyframes, yuv420p, 48 kHz AAC) tuned for Twitch / Kick / AngelThump. Rate control honours the basic CBR/VBR toggle above.</p>
-              )}
+              <label className="field">Extra ffmpeg args <span className="muted">(output options — power user)</span>
+                <input value={adv.extraArgs} onChange={(e) => setAdvField('extraArgs', e.target.value)} placeholder={'-x264-params "keyint=60:scenecut=0" -aq-mode 3'} />
+              </label>
+              <button className="btn btn-secondary btn-small" onClick={resetAdv}>Reset encoder to platform defaults</button>
+              <datalist id="dl-preset">{['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow'].map((x) => <option key={x} value={x} />)}</datalist>
+              <datalist id="dl-profile">{['baseline','main','high','high10','none'].map((x) => <option key={x} value={x} />)}</datalist>
+              <datalist id="dl-tune">{['film','animation','grain','stillimage','fastdecode','zerolatency'].map((x) => <option key={x} value={x} />)}</datalist>
+              <datalist id="dl-pixfmt">{['yuv420p','yuv422p','yuv444p'].map((x) => <option key={x} value={x} />)}</datalist>
+              <datalist id="dl-acodec">{['aac'].map((x) => <option key={x} value={x} />)}</datalist>
+              <datalist id="dl-arate">{['44100','48000'].map((x) => <option key={x} value={x} />)}</datalist>
             </div>
           </aside>
         </>
