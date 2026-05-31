@@ -731,4 +731,7 @@ code {
 .field { display: block; color: #aaa; font-size: 0.8rem; margin-bottom: 0.75rem; }
 .field select, .field input { margin-top: 0.3rem; }
 .btn-full { width: 100%; }
+.check-row { display: flex; align-items: center; gap: 0.5rem; color: #ccc; font-size: 0.85rem; margin: 0.25rem 0 0.85rem; cursor: pointer; }
+.check-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: #00ff00; flex: none; }
+.drawer-footer { position: sticky; bottom: 0; background: #0d0d0d; padding: 0.85rem 0 0.5rem; border-top: 1px solid #222; margin-top: 0.5rem; }
 

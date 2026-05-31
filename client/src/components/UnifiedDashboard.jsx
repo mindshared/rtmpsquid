@@ -36,7 +36,7 @@ const ADV_DEFAULTS = {
   audioCodec: 'aac', audioSampleRate: '48000', extraArgs: '',
 };
 
-function NowPlaying({ status, currentFile, nextTrack, onStop, onNext }) {
+function NowPlaying({ status, currentFile, nextTrack, onStop, onNext, onPause }) {
   const s = status?.status || 'streaming';
   const standby = s === 'standby';
   const reconnecting = s === 'reconnecting';
@@ -58,6 +58,28 @@ function NowPlaying({ status, currentFile, nextTrack, onStop, onNext }) {
       <div className="np-side">
         <div className="np-time">{elapsed(status?.progress?.timeMs)}</div>
         <button className="btn btn-secondary btn-small" onClick={onNext} disabled={standby || reconnecting} title="Skip to the next video">⏭ Next</button>
+        <button className="btn btn-secondary btn-small" onClick={onPause} disabled={reconnecting} title="Pause: go offline but keep your place, then Resume">⏸ Pause</button>
+        <button className="btn btn-danger btn-small" onClick={onStop}>Stop</button>
+      </div>
+    </div>
+  );
+}
+
+function PausedCard({ queue, onResume, onStop }) {
+  const at = queue?.resumeOffset != null ? elapsed(queue.resumeOffset * 1000) : null;
+  return (
+    <div className="nowplaying is-standby">
+      <div className="np-art">⏸</div>
+      <div className="np-main">
+        <div className="np-badge">PAUSED · OFFLINE</div>
+        <div className="np-title">{niceName(queue?.resumeFile) || 'Paused'}</div>
+        <div className="np-meta">
+          Disconnected from the platform. Resume picks up the same movie
+          {at ? <> at <strong>{at}</strong></> : null}. Change settings now if you like.
+        </div>
+      </div>
+      <div className="np-side">
+        <button className="btn btn-primary btn-small" onClick={onResume}>▶ Resume</button>
         <button className="btn btn-danger btn-small" onClick={onStop}>Stop</button>
       </div>
     </div>
@@ -86,6 +108,9 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   const [audioChannels, setAudioChannels] = useState(ls('rs_ac', '2'));
   const [order, setOrder] = useState(ls('rs_order', 'shuffle'));
   const [minSizeMB, setMinSizeMB] = useState(ls('rs_minmb', '5'));
+  // Auto-restart on unexpected failure (resumes the same movie at the same spot).
+  const [autoRestart, setAutoRestart] = useState(ls('rs_autorestart', '1') === '1');
+  const toggleAutoRestart = (v) => { localStorage.setItem('rs_autorestart', v ? '1' : '0'); setAutoRestart(v); };
   const save = (k, v, set) => { localStorage.setItem(k, v); set(v); };
 
   // Single authoritative encoder settings (the basic/advanced split was retired
@@ -111,6 +136,7 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   }, [socket]);
 
   const streaming = !!queue?.streaming;
+  const paused = !!queue?.paused;
   const files = queue?.files || [];
   const currentIndex = streaming && queue?.currentFile ? files.findIndex((f) => basename(f) === queue.currentFile) : -1;
   const nextTrack = currentIndex >= 0 && currentIndex < files.length - 1 ? files[currentIndex + 1] : null;
@@ -171,6 +197,7 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
     audioChannels: parseInt(audioChannels, 10),
     fps: parseInt(fps, 10),
     order, fit: videoFit,
+    autoRestart,
     advanced: adv,
   });
 
@@ -182,18 +209,20 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
   };
   const stop = () => call(() => api.post('/api/queue/stop'), 'Stop');
   const skipNext = () => call(() => api.post('/api/queue/next'), 'Next');
+  const pause = () => call(() => api.post('/api/queue/pause'), 'Pause').then((d) => { if (d) notify?.('Paused — you can change settings, then Resume'); });
+  const resume = () => call(() => api.post('/api/queue/resume'), 'Resume').then((d) => { if (d) notify?.('Resuming where you left off'); });
 
-  // While streaming, push setting changes to the server so they apply at the
-  // next file boundary — no reconnect to the RTMP ingest. Debounced so dragging
-  // a slider doesn't spam the endpoint.
-  useEffect(() => {
-    if (!streaming) return;
-    const t = setTimeout(() => {
-      api.post('/api/queue/settings', buildEncodePayload()).catch(() => {});
-    }, 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [streaming, resolution, bitrate, audioBitrate, audioChannels, fps, order, videoFit, adv]);
+  // Settings are saved to this browser as you type. "Apply" is the only thing
+  // that pushes them to a running stream (taking effect at the next track) — so a
+  // second/stale tab can never silently overwrite the live encoder. Off-air, it
+  // just confirms the save (settings are used on the next Go Live).
+  const applySettings = () => {
+    if (streaming) {
+      return call(() => api.post('/api/queue/settings', buildEncodePayload()), 'Apply')
+        .then((d) => { if (d) notify?.('Settings applied — takes effect at the next track'); });
+    }
+    notify?.('Settings saved');
+  };
 
   const hasLibrary = queue && queue.libraryCount > 0;
 
@@ -204,8 +233,10 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
         <div className="appbar-actions">
           {hasLibrary && <button className="btn btn-secondary btn-small" onClick={reshuffle} disabled={busy} title="Fresh random queue">🔀 Shuffle</button>}
           <button className="btn btn-secondary btn-small" onClick={() => setDrawerOpen(true)}>⚙ Settings</button>
-          {streaming
-            ? <button className="btn btn-danger btn-small" onClick={stop}>■ Stop</button>
+          {streaming && <button className="btn btn-secondary btn-small" onClick={pause} disabled={busy} title="Go offline but keep your place">⏸ Pause</button>}
+          {paused && <button className="btn btn-primary btn-small" onClick={resume} disabled={busy}>▶ Resume</button>}
+          {(streaming || paused)
+            ? <button className="btn btn-danger btn-small" onClick={stop} disabled={busy}>■ Stop</button>
             : <button className="btn btn-primary btn-small" onClick={goLive} disabled={!hasLibrary || busy}>● Go Live</button>}
           <button className="btn btn-secondary btn-small" onClick={onLogout} title="Log out">⏻</button>
         </div>
@@ -224,7 +255,8 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
         <div className="player-grid">
           {/* ---- main: now playing + queue ---- */}
           <main className="player-body scrollable">
-            {streaming && <NowPlaying status={streamStatus} currentFile={queue.currentFile} nextTrack={nextTrack} onStop={stop} onNext={skipNext} />}
+            {streaming && <NowPlaying status={streamStatus} currentFile={queue.currentFile} nextTrack={nextTrack} onStop={stop} onNext={skipNext} onPause={pause} />}
+            {paused && <PausedCard queue={queue} onResume={resume} onStop={stop} />}
 
             <section
               className="queue"
@@ -421,6 +453,10 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
               <label className="field">Extra ffmpeg args <span className="muted">(output options — power user)</span>
                 <input value={adv.extraArgs} onChange={(e) => setAdvField('extraArgs', e.target.value)} placeholder={'-x264-params "keyint=60:scenecut=0" -aq-mode 3'} />
               </label>
+              <label className="check-row" title="If the stream drops, automatically reconnect and resume the same movie at the same spot. Clicking Stop always wins.">
+                <input type="checkbox" checked={autoRestart} onChange={(e) => toggleAutoRestart(e.target.checked)} />
+                <span>Auto-restart if the stream fails <span className="muted">(resumes where it left off)</span></span>
+              </label>
               <button className="btn btn-secondary btn-small" onClick={resetAdv}>Reset encoder to platform defaults</button>
               <datalist id="dl-preset">{['ultrafast','superfast','veryfast','faster','fast','medium','slow','slower','veryslow'].map((x) => <option key={x} value={x} />)}</datalist>
               <datalist id="dl-profile">{['baseline','main','high','high10','none'].map((x) => <option key={x} value={x} />)}</datalist>
@@ -428,6 +464,17 @@ function QueueView({ socket, queue, streamStatus, setQueue, notify, onLogout }) 
               <datalist id="dl-pixfmt">{['yuv420p','yuv422p','yuv444p'].map((x) => <option key={x} value={x} />)}</datalist>
               <datalist id="dl-acodec">{['aac'].map((x) => <option key={x} value={x} />)}</datalist>
               <datalist id="dl-arate">{['44100','48000'].map((x) => <option key={x} value={x} />)}</datalist>
+            </div>
+
+            <div className="drawer-footer">
+              <button className="btn btn-primary btn-full" onClick={applySettings} disabled={busy}>
+                {streaming ? 'Apply settings (next track)' : 'Save settings'}
+              </button>
+              <p className="hint" style={{ marginTop: '0.4rem' }}>
+                {streaming
+                  ? 'Encoder changes are pushed to the live stream and take effect at the next movie — the RTMP connection stays up.'
+                  : 'Saved to this browser and used the next time you Go Live.'}
+              </p>
             </div>
           </aside>
         </>

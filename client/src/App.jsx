@@ -44,6 +44,7 @@ function App() {
     s.on('stream:fileskipped', (d) => notify(`Skipped unreadable file: ${d.file || 'unknown'}`, 'error'));
     s.on('stream:error', (d) => { notify(`Stream error: ${d.error}`, 'error'); setStreamStatus(null); });
     s.on('stream:stopped', () => { setStreamStatus(null); });
+    s.on('stream:paused', () => { setStreamStatus(null); });
 
     return () => s.close();
   }, [authed, fetchStatus, notify]);

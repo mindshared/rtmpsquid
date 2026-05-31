@@ -18,6 +18,11 @@ export class StreamManager {
     this.currentFile = null;
     this.stream = null;                           // ContinuousStream | null
     this.rtmpUrl = null;
+    this.paused = false;                          // true after pauseQueue() until resume/stop
+    this.resumePoint = null;                      // { file, offset } captured at pause
+    this.lastRtmpUrl = null;                      // remembered for resume
+    this.lastOptions = null;                      // remembered encode options for resume
+    this.autoRestart = true;                      // mirrors the user's auto-restart setting
     this.order = 'shuffle';                        // 'shuffle' | 'sequential'
     this._seqIndex = 0;                            // cursor into the sorted library for sequential play
     this.minMovieMB = config.minMovieBytes / (1024 * 1024); // smallest file allowed in the library
@@ -128,6 +133,11 @@ export class StreamManager {
       streamId: this.stream?.id || null,
       rtmpUrl: this.rtmpUrl,
       minMovieMB: this.minMovieMB,
+      paused: this.paused,
+      canResume: this.paused && !!this.resumePoint,
+      resumeFile: this.paused && this.resumePoint?.file ? path.basename(this.resumePoint.file) : null,
+      resumeOffset: this.paused && this.resumePoint ? Math.round(this.resumePoint.offset || 0) : null,
+      autoRestart: this.autoRestart,
     };
   }
 
@@ -173,17 +183,34 @@ export class StreamManager {
     cs.on('reconnecting', (d) => this.io.emit('stream:reconnecting', d));
     cs.on('fileskipped', (d) => this.io.emit('stream:fileskipped', d));
     cs.on('error', (d) => { this.stream = null; this.currentFile = null; this.rtmpUrl = null; this.io.emit('stream:error', d); this.io.emit('queue:updated', this.getQueue()); });
-    cs.on('stopped', () => { this.stream = null; this.currentFile = null; this.rtmpUrl = null; this.io.emit('stream:stopped', {}); this.io.emit('queue:updated', this.getQueue()); });
+    cs.on('stopped', () => {
+      this.stream = null;
+      this.currentFile = null;
+      // A pause stops the stream too; let pauseQueue() own the UI signal in that
+      // case so the client shows "Paused" rather than a full stop.
+      if (this.paused) { this.io.emit('queue:updated', this.getQueue()); return; }
+      this.rtmpUrl = null;
+      this.io.emit('stream:stopped', {});
+      this.io.emit('queue:updated', this.getQueue());
+    });
   }
 
   async startQueue(rtmpUrl, options = {}) {
     if (this.stream) throw Object.assign(new Error('Already streaming'), { status: 400 });
-    // Apply the requested playback order and rebuild the queue fresh from it.
+    // Apply the requested playback order for future refills. Preserve an existing
+    // (possibly user-curated) queue across stop/start — stopping no longer wipes
+    // or reshuffles the playlist; only an empty queue is built fresh, and the
+    // explicit Shuffle button is the way to deliberately re-randomise.
     this.order = options.order === 'sequential' ? 'sequential' : 'shuffle';
-    this._seqIndex = 0;
-    this.queue = [];
+    if (!this.queue.length) this._seqIndex = 0;
     this._refill();
     if (!this.queue.length) throw Object.assign(new Error('Queue is empty — set a library folder with movies'), { status: 400 });
+
+    // Remember connection + options so pause/resume and auto-restart can rebuild.
+    this.lastRtmpUrl = rtmpUrl;
+    this.lastOptions = { ...options };
+    this.autoRestart = options.autoRestart !== false;
+    this.paused = false;
 
     const streamId = uuidv4();
     let first = true;
@@ -212,11 +239,54 @@ export class StreamManager {
     return { streamId };
   }
 
+  // Explicit stop: tear the stream down but KEEP the playlist as-is (no wipe, no
+  // reshuffle) and forget any pause/resume point — Stop always wins over
+  // auto-restart. The queue is left intact so Go Live picks up the same list.
   async stopQueue() {
+    this.paused = false;
+    this.resumePoint = null;
     if (this.stream) { await this.stream.stop(); this.stream = null; }
     this.currentFile = null;
     this.rtmpUrl = null;
     this.io.emit('queue:updated', this.getQueue());
+  }
+
+  // Pause: capture the current movie + position, then take the broadcast offline
+  // (we disconnect from the platform). The queue and resume point are kept so
+  // resumeQueue() can reconnect and pick up where we left off.
+  async pauseQueue() {
+    if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
+    const state = this.stream.getResumeState(); // { file, offset }
+    this.resumePoint = state;
+    // Set paused before stopping so the stream's own 'stopped' event is treated
+    // as a pause (not a full stop) by the handler above.
+    this.paused = true;
+    await this.stream.stop();
+    this.stream = null;
+    this.rtmpUrl = null;
+    const file = state.file ? path.basename(state.file) : null;
+    this.io.emit('stream:paused', { file, offset: Math.round(state.offset || 0) });
+    this.io.emit('queue:updated', this.getQueue());
+    return { paused: true, file, offset: Math.round(state.offset || 0) };
+  }
+
+  // Resume a paused stream: reconnect to the same destination and start the
+  // remembered file at the remembered offset.
+  async resumeQueue() {
+    if (this.stream) throw Object.assign(new Error('Already streaming'), { status: 400 });
+    if (!this.paused || !this.lastRtmpUrl) throw Object.assign(new Error('Nothing to resume'), { status: 400 });
+    const rp = this.resumePoint || {};
+    // Make sure the paused movie is the head of the queue so we resume it (not
+    // whatever happens to be first), then seek into it on the first feed.
+    if (rp.file) {
+      const idx = this.queue.indexOf(rp.file);
+      if (idx > 0) this.queue.splice(idx, 1);
+      if (idx !== 0) this.queue.unshift(rp.file);
+    }
+    const opts = { ...(this.lastOptions || {}), startTime: rp.offset ? Math.max(0, Math.floor(rp.offset)) : null };
+    this.paused = false;
+    this.resumePoint = null;
+    return this.startQueue(this.lastRtmpUrl, opts);
   }
 
   // Skip the currently-playing file and advance to the next one.
@@ -231,6 +301,9 @@ export class StreamManager {
   updateSettings(options = {}) {
     if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
     if (options.order === 'sequential' || options.order === 'shuffle') this.order = options.order;
+    if (options.autoRestart !== undefined) this.autoRestart = options.autoRestart !== false;
+    // Keep remembered options current so a later pause/resume uses the latest.
+    this.lastOptions = { ...(this.lastOptions || {}), ...options };
     this.stream.updateOptions(options);
     return { applied: true, appliesAtNextTrack: true };
   }

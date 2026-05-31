@@ -100,6 +100,10 @@ app.post('/api/queue/stop', h(async (req, res) => { await streamManager.stopQueu
 
 app.post('/api/queue/next', h(async (req, res) => { res.json(streamManager.skipCurrent()); }));
 
+// Pause goes offline but remembers the spot; resume reconnects and picks it up.
+app.post('/api/queue/pause', h(async (req, res) => { res.json(await streamManager.pauseQueue()); }));
+app.post('/api/queue/resume', h(async (req, res) => { res.json({ success: true, ...(await streamManager.resumeQueue()) }); }));
+
 // Live settings push — applies at the next track boundary without dropping
 // the RTMP connection. Strips rtmpUrl/streamKey to make accidental ingest
 // changes impossible via this path.

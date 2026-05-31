@@ -16,6 +16,21 @@ const SLATE_FONT = [
 
 const SLATE_CHUNK_SECONDS = 8; // how long each slate segment runs before re-checking for content
 
+const HEALTHY_RUN_MS = 60_000;   // a streamer alive at least this long resets the reconnect backoff
+const RECONNECT_BASE_MS = 2_000; // first reconnect delay; doubles each consecutive failure
+const RECONNECT_MAX_MS = 15_000; // backoff ceiling
+const RESUME_REWIND_S = 2;       // rewind a touch when resuming so we don't skip past content
+
+// Stall detection. A flaky/half-open RTMP link often does NOT make ffmpeg exit —
+// the socket write just blocks forever (output frozen, the dashboard bitrate
+// creeps up as buffered data is divided by a stuck clock). The exit-based
+// reconnect can't see that, so a watchdog forces a reconnect when the streamer
+// stops reporting progress, and -rw_timeout makes ffmpeg give up on a wedged
+// socket on its own as a backstop.
+const STALL_TIMEOUT_MS = 12_000; // no streamer progress for this long ⇒ link is hung ⇒ reconnect
+const STALL_CHECK_MS = 3_000;    // how often the watchdog polls
+const RW_TIMEOUT_US = 20_000_000; // ffmpeg socket read/write timeout for the RTMP output (µs)
+
 // Convert an ffmpeg bitrate string ("3M", "1.5M", "3000k", or bare bits) to kbps,
 // so we can derive bufsize regardless of which suffix the setting uses.
 function bitrateToKbps(s) {
@@ -109,6 +124,10 @@ export class ContinuousStream extends EventEmitter {
     this.enc = normalizeEncode(options.advanced);
 
     this.fifoPath = path.join(config.tmpDir, `rtmpsquid-${this.id}.ts`);
+    // Holds the current movie's title for the bottom-left overlay. We write the
+    // name here and point drawtext at it via textfile= so filenames with colons,
+    // quotes, %, etc. don't need filtergraph-level escaping.
+    this.titleFile = path.join(config.tmpDir, `rtmpsquid-${this.id}-title.txt`);
     this.holderFd = null;
     this.streamer = null;
     this.feeder = null;
@@ -119,8 +138,27 @@ export class ContinuousStream extends EventEmitter {
     this.progress = {};
     this.stopping = false;
     this.firstFeed = true;
-    this.restarts = 0;
-    this.maxRestarts = 5;
+
+    // Auto-restart on unexpected streamer (RTMP) death. When on, we reconnect
+    // indefinitely with backoff and resume the SAME file at the SAME offset; a
+    // healthy run resets the backoff so a long session with occasional blips is
+    // never killed for good. When off, an unexpected death ends the stream.
+    // An explicit stop() always wins regardless of this flag.
+    this.autoRestart = options.autoRestart !== false;
+    this._reconnects = 0;          // consecutive reconnects (backoff; reset after a healthy run)
+    this.streamerStartedAt = null; // wall-clock the current streamer was spawned
+    this.lastProgressAt = null;    // wall-clock of the last streamer -progress tick (stall watchdog)
+    this.watchdog = null;          // interval handle for the stall watchdog
+
+    // Playback-position tracking, so a reconnect (or pause/resume) can pick the
+    // current file back up where it left off instead of jumping to the next one.
+    this.feederStartedAt = null;   // wall-clock the current feeder began
+    this.feederSeek = 0;           // seconds seeked into the current content file at feed time
+    this.tsOffset = 0;             // running output-timestamp base (seconds) — keeps the
+                                   // concatenated MPEG-TS monotonic across feeders so the
+                                   // streamer's copy doesn't feed the muxer backwards DTS.
+    this._resumeSeek = null;       // offset to resume the current file at after a drop
+
     this._intentionalSkip = false; // set when the user hits Next, so the early
                                    // feeder exit isn't logged as an unreadable skip
     this._consecFails = 0;         // consecutive instant feeder failures (for backoff)
@@ -148,11 +186,24 @@ export class ContinuousStream extends EventEmitter {
     const nextEnc = normalizeEncode(options.advanced);
     this.opt = nextOpt;
     this.enc = nextEnc;
+    if (options.autoRestart !== undefined) this.autoRestart = options.autoRestart !== false;
+  }
+
+  // Seconds played into the current content file right now (seek + wall-clock
+  // elapsed, since -re plays at realtime). Used to resume in place.
+  _currentContentOffset() {
+    if (this.feederKind !== 'content' || this.feederStartedAt == null) return 0;
+    return (this.feederSeek || 0) + Math.max(0, (Date.now() - this.feederStartedAt) / 1000);
+  }
+
+  // Snapshot for pause/resume: which file and how far in.
+  getResumeState() {
+    return { file: this.currentFile, offset: this._currentContentOffset() };
   }
 
   // ---- ffmpeg argument builders -------------------------------------------
 
-  _videoFilter() {
+  _videoFilter(overlayTitle = false) {
     const { width: W, height: H, fps, fit } = this.opt;
     let scale;
     if (fit === 'stretch') {
@@ -165,7 +216,17 @@ export class ContinuousStream extends EventEmitter {
     } else {
       scale = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black`;
     }
-    return `${scale},setsar=1,fps=${fps},format=yuv420p`;
+    let vf = `${scale},setsar=1,fps=${fps},format=yuv420p`;
+    // Small, unobtrusive movie-name label in the bottom-left corner. Reads the
+    // title from this.titleFile (written per-file in _spawnFeeder) so no escaping
+    // is needed; skipped if no usable font was found.
+    if (overlayTitle && SLATE_FONT) {
+      const pad = Math.round(H / 30);
+      vf += `,drawtext=fontfile='${SLATE_FONT}':textfile='${this.titleFile}':reload=1`
+        + `:fontcolor=white@0.85:fontsize=${Math.round(H / 40)}`
+        + `:x=${pad}:y=h-text_h-${pad}:shadowcolor=black@0.7:shadowx=2:shadowy=2`;
+    }
+    return vf;
   }
 
   // Output options shared by every feeder, built from this.enc. Defaults satisfy
@@ -199,7 +260,8 @@ export class ContinuousStream extends EventEmitter {
 
     const a = ['-c:a', e.audioCodec, '-b:a', audioBitrate, '-ar', e.audioSampleRate, '-ac', String(audioChannels)];
 
-    return [...v, ...a, ...parseArgString(e.extraArgs), '-f', 'mpegts', this.fifoPath];
+    return [...v, ...a, ...parseArgString(e.extraArgs),
+      '-output_ts_offset', this.tsOffset.toFixed(3), '-f', 'mpegts', this.fifoPath];
   }
 
   // ---- lifecycle -----------------------------------------------------------
@@ -222,12 +284,19 @@ export class ContinuousStream extends EventEmitter {
       '-fflags', '+genpts+igndts',
       '-f', 'mpegts', '-i', this.fifoPath,
       '-c', 'copy',
-      '-f', 'flv',
+      // flush_packets keeps the muxer from hoarding a backlog (which is what makes
+      // the reported bitrate balloon when the link stalls); rw_timeout makes a
+      // wedged socket error out instead of blocking the process forever.
+      '-f', 'flv', '-flush_packets', '1',
       '-progress', 'pipe:1', '-nostats',
+      '-rw_timeout', String(RW_TIMEOUT_US),
       this.rtmpUrl,
     ];
     const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     this.streamer = proc;
+    this.streamerStartedAt = Date.now();
+    this.lastProgressAt = Date.now();
+    this._startWatchdog();
 
     let progBuf = {};
     proc.stdout.on('data', (chunk) => {
@@ -237,6 +306,7 @@ export class ContinuousStream extends EventEmitter {
         const key = line.slice(0, idx).trim();
         const val = line.slice(idx + 1).trim();
         if (key === 'progress') {
+          this.lastProgressAt = Date.now(); // feeds the stall watchdog
           this.progress = {
             timeMs: parseInt(progBuf.out_time_us || progBuf.out_time_ms || '0', 10) / 1000,
             fps: parseFloat(progBuf.fps || '0'),
@@ -255,33 +325,73 @@ export class ContinuousStream extends EventEmitter {
     proc.stderr.on('data', d => { stderrTail = (stderrTail + d.toString()).slice(-2000); });
 
     proc.on('exit', (code, signal) => {
+      this._stopWatchdog(); // don't let it fire during the reconnect gap
       if (this.stopping) return;
-      // Unexpected streamer death — the RTMP connection dropped. Try to recover.
-      console.error(`[${this.id}] streamer exited code=${code} sig=${signal}\n${stderrTail}`);
-      if (this.restarts < this.maxRestarts) {
-        this.restarts++;
-        this.status = 'error';
-        this.emit('reconnecting', { streamId: this.id, attempt: this.restarts });
-        // Detach the feeder BEFORE killing it so its exit handler (guarded by
-        // `this.feeder !== proc`) bows out instead of spawning a second feeder
-        // into the FIFO — the reconnect timer is the sole owner of the re-feed.
-        const dying = this.feeder;
-        this.feeder = null;
-        try { dying?.kill('SIGKILL'); } catch {}
-        setTimeout(() => {
-          if (this.stopping) return;
-          this._spawnStreamer();
-          this._feedNext();
-        }, 2000);
-      } else {
-        // Out of retries: stop the feed loop for good before cleanup so no
-        // orphaned/late feeder exit can respawn another one.
+      // Unexpected streamer death — the RTMP connection dropped (or the watchdog
+      // / rw_timeout killed a hung one).
+      const aliveMs = Date.now() - (this.streamerStartedAt || Date.now());
+      console.error(`[${this.id}] streamer exited code=${code} sig=${signal} after ${Math.round(aliveMs / 1000)}s\n${stderrTail}`);
+
+      if (!this.autoRestart) {
+        // Recovery disabled by the user — end the stream cleanly. Stop the feed
+        // loop first so no late feeder exit can respawn one.
         this.stopping = true;
         this.status = 'error';
-        this.emit('error', { streamId: this.id, error: `Streamer failed: ${stderrTail.split('\n').slice(-3).join(' ')}` });
+        this.emit('error', { streamId: this.id, error: `Stream ended: ${stderrTail.split('\n').slice(-3).join(' ')}` });
         this._cleanup();
+        return;
       }
+
+      // Auto-restart: reconnect indefinitely with capped exponential backoff.
+      // A healthy run resets the counter so transient drops can't accumulate and
+      // eventually kill a long-running stream (the old fixed 5-strike cap did).
+      if (aliveMs > HEALTHY_RUN_MS) this._reconnects = 0;
+      this._reconnects++;
+      this.status = 'error';
+      this.emit('reconnecting', { streamId: this.id, attempt: this._reconnects });
+
+      // Capture where the current file was so we resume there, then detach the
+      // feeder BEFORE killing it: its exit handler (guarded by `this.feeder !==
+      // proc`) bows out instead of spawning a feeder — the reconnect timer is
+      // the sole owner of the re-feed.
+      this._resumeSeek = this.feederKind === 'content'
+        ? Math.max(0, this._currentContentOffset() - RESUME_REWIND_S)
+        : null;
+      const dying = this.feeder;
+      this.feeder = null;
+      try { dying?.kill('SIGKILL'); } catch {}
+
+      const delay = Math.min(RECONNECT_BASE_MS * 2 ** (this._reconnects - 1), RECONNECT_MAX_MS);
+      setTimeout(() => {
+        if (this.stopping) return;
+        this._resetPipe();   // fresh FIFO + zeroed timestamp base for the new session
+        this._spawnStreamer();
+        this._feedResume();
+      }, delay);
     });
+  }
+
+  // Stall watchdog: a hung/half-open RTMP link usually freezes the streamer
+  // without making it exit (so the exit-based reconnect never fires and the
+  // stream is silently "down"). If no -progress tick arrives for STALL_TIMEOUT_MS
+  // we force the streamer down; its exit handler then reconnects in place (or, if
+  // auto-restart is off, ends the stream cleanly rather than leaving a zombie).
+  _startWatchdog() {
+    this._stopWatchdog();
+    this.watchdog = setInterval(() => {
+      if (this.stopping || !this.streamer) return;
+      const since = Date.now() - (this.lastProgressAt || Date.now());
+      if (since > STALL_TIMEOUT_MS) {
+        console.error(`[${this.id}] streamer stalled (no progress for ${Math.round(since / 1000)}s) — forcing reconnect`);
+        this._stopWatchdog();
+        try { this.streamer.kill('SIGKILL'); } catch {}
+      }
+    }, STALL_CHECK_MS);
+    if (this.watchdog.unref) this.watchdog.unref(); // never keep the process alive
+  }
+
+  _stopWatchdog() {
+    if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
   }
 
   _feedNext() {
@@ -297,14 +407,43 @@ export class ContinuousStream extends EventEmitter {
     }
   }
 
-  _spawnFeeder(kind, file = null) {
-    const vf = this._videoFilter();
+  // Re-feed the CURRENT file at the offset it was last playing (used after a
+  // reconnect). Falls back to a normal advance when there's no content to resume.
+  _feedResume() {
+    if (this.stopping) return;
+    if (this._resumeSeek != null && this.currentFile) {
+      const seek = this._resumeSeek;
+      this._resumeSeek = null;
+      this._spawnFeeder('content', this.currentFile, seek);
+    } else {
+      this._feedNext();
+    }
+  }
+
+  _spawnFeeder(kind, file = null, seek = null) {
+    // Advance the running TS base by however long the previous feeder ran, so
+    // the concatenated MPEG-TS the streamer copies stays monotonic across files
+    // (each feeder otherwise restarts its timestamps near zero, which the FLV
+    // muxer rejects as non-monotonic DTS). The small epsilon keeps it strictly
+    // increasing even for instant failures; overshoot only ever opens a forward
+    // gap, never a backward jump.
+    const now = Date.now();
+    if (this.feederStartedAt != null) this.tsOffset += Math.max(0, (now - this.feederStartedAt) / 1000) + 0.25;
+    this.feederStartedAt = now;
+    this.feederSeek = 0;
+
+    let vf = null;
     let inputArgs;
 
     if (kind === 'content') {
+      // Write the movie name (sans extension) for the bottom-left overlay.
+      try { fs.writeFileSync(this.titleFile, path.basename(file, path.extname(file))); } catch {}
+      vf = this._videoFilter(true);
       inputArgs = [];
-      // Apply an optional seek to the first file only.
-      if (this.firstFeed && this.opt.startTime) inputArgs.push('-ss', String(this.opt.startTime));
+      // Seek: an explicit resume offset wins; otherwise the one-time start
+      // offset applies to the very first file only.
+      const ss = seek != null ? seek : (this.firstFeed ? this.opt.startTime : null);
+      if (ss) { inputArgs.push('-ss', String(ss)); this.feederSeek = parseFloat(ss) || 0; }
       inputArgs.push('-re', '-i', file);
       this.currentFile = file;
       this.status = 'streaming';
@@ -382,6 +521,7 @@ export class ContinuousStream extends EventEmitter {
     if (this.stopping) return;
     this.stopping = true;
     this.status = 'stopping';
+    this._stopWatchdog();
 
     // Graceful feeder shutdown: SIGINT lets ffmpeg flush buffers and release file
     // handles/threads before we force-kill. SIGKILL'd ffmpegs in a tight cycle
@@ -416,11 +556,28 @@ export class ContinuousStream extends EventEmitter {
     this.emit('stopped', { streamId: this.id, playlistId: this.playlistId });
   }
 
+  // Recreate the FIFO and reset the timestamp base for a clean reconnect: the
+  // new RTMP session then starts near zero and reads no leftover bytes from the
+  // dropped session, so the platform sees a clean fresh stream rather than a
+  // jump to some large timestamp. feederStartedAt is cleared so the first
+  // resumed feeder doesn't fold the outage gap into the timestamp base.
+  _resetPipe() {
+    try { if (this.holderFd !== null) fs.closeSync(this.holderFd); } catch {}
+    this.holderFd = null;
+    try { fs.unlinkSync(this.fifoPath); } catch {}
+    try { execFileSync('mkfifo', [this.fifoPath]); } catch {}
+    try { this.holderFd = fs.openSync(this.fifoPath, 'r+'); } catch {}
+    this.tsOffset = 0;
+    this.feederStartedAt = null;
+  }
+
   _cleanup() {
+    this._stopWatchdog();
     try { if (this.holderFd !== null) fs.closeSync(this.holderFd); } catch {}
     this.holderFd = null;
     try { this.feeder?.kill('SIGKILL'); } catch {}
     try { fs.unlinkSync(this.fifoPath); } catch {}
+    try { fs.unlinkSync(this.titleFile); } catch {}
   }
 
   getStatus() {
@@ -435,6 +592,7 @@ export class ContinuousStream extends EventEmitter {
       resolution: `${this.opt.width}x${this.opt.height}`,
       videoBitrate: this.opt.videoBitrate,
       audioBitrate: this.opt.audioBitrate,
+      autoRestart: this.autoRestart,
     };
   }
 }
