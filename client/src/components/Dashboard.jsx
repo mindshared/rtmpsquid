@@ -21,7 +21,7 @@ const EMPTY = [];
 // Orchestrator: owns the shared state + server calls and composes the panels.
 // Each panel is wrapped in an ErrorBoundary so a render error in one degrades
 // just that panel instead of unmounting the whole dashboard.
-export default function Dashboard({ socket, queue, streamStatus, setQueue, notify, onLogout }) {
+export default function Dashboard({ socket, queue, streamStatus, setQueue, notify, onLogout, refreshStatus }) {
   const settings = useEncoderSettings();
   const { library, refetchLibrary } = useLibrary(socket);
   const { entries: ffmpegLog, lastStatus } = useFfmpegLog(socket, streamStatus?.log);
@@ -129,7 +129,10 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
   const applySettings = () => {
     if (streaming) {
       return call(() => api.post('/api/queue/settings', settings.buildEncodePayload()), 'Apply').then((d) => {
-        if (d) notify?.('Settings applied — takes effect at the next track');
+        if (d) {
+          notify?.('Settings applied — takes effect at the next track');
+          refreshStatus?.(); // pull the new target so the "X target" display updates immediately
+        }
       });
     }
     notify?.('Settings saved');

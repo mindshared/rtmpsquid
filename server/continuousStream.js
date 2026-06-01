@@ -347,6 +347,9 @@ export class ContinuousStream extends EventEmitter {
     this._startWatchdog();
 
     let progBuf = {};
+    let prevUs = 0;   // previous tick's out_time (µs) and total bytes, for an
+    let prevSize = 0; // INSTANTANEOUS rate — ffmpeg's own bitrate= is a cumulative
+    let instBitrate = null; // session average that barely moves when settings change
     proc.stdout.on('data', (chunk) => {
       for (const line of chunk.toString().split('\n')) {
         const idx = line.indexOf('=');
@@ -360,14 +363,24 @@ export class ContinuousStream extends EventEmitter {
           // while total_size keeps climbing and the reported bitrate balloons —
           // exposing that here is how we catch the "bitrate creeps to 3M" bug.
           const outTimeUs = parseInt(progBuf.out_time_us || progBuf.out_time_ms || '0', 10);
+          const totalSize = parseInt(progBuf.total_size || '0', 10);
+          // Instantaneous throughput over the gap since the last tick (~1s), so a
+          // bitrate change is visible within a track instead of being smeared into
+          // the session average. Guard against the per-reconnect counter reset.
+          const dUs = outTimeUs - prevUs;
+          const dBytes = totalSize - prevSize;
+          if (dUs > 0 && dBytes >= 0) instBitrate = `${((dBytes * 8000) / dUs).toFixed(1)}kbits/s`;
+          prevUs = outTimeUs;
+          prevSize = totalSize;
           this.progress = {
             timeMs: outTimeUs / 1000,
             outTime: progBuf.out_time || null,
             fps: parseFloat(progBuf.fps || '0'),
             bitrate: progBuf.bitrate || null,
+            instBitrate, // recent-window rate (what the UI shows as "live")
             speed: progBuf.speed || null,
             frame: parseInt(progBuf.frame || '0', 10),
-            totalSize: parseInt(progBuf.total_size || '0', 10),
+            totalSize,
             dropFrames: parseInt(progBuf.drop_frames || '0', 10),
             dupFrames: parseInt(progBuf.dup_frames || '0', 10),
           };

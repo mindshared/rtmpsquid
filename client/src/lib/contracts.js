@@ -34,6 +34,7 @@
  * @typedef {Object} StreamProgress
  * @property {number} [timeMs]
  * @property {string} [bitrate]
+ * @property {string} [instBitrate]
  * @property {string} [speed]
  * @property {number} [fps]
  * @property {number} [frame]

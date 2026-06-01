@@ -7,7 +7,7 @@ export default function NowPlaying({ status, currentFile, nextTrack, onStop, onN
   const standby = s === 'standby';
   const reconnecting = s === 'reconnecting';
   const label = reconnecting ? 'RECONNECTING' : standby ? 'STANDBY' : 'LIVE';
-  const live = liveRate(status?.progress?.bitrate);
+  const live = liveRate(status?.progress?.instBitrate || status?.progress?.bitrate);
   const speed = status?.progress?.speed;
   return (
     <div className={`nowplaying ${standby ? 'is-standby' : ''} ${reconnecting ? 'is-reconnecting' : ''}`}>
