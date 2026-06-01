@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { basename, niceName, elapsed, liveRate, toM } from './format';
+import { basename, niceName, elapsed, liveRate, normalizeBitrate } from './format';
 
 describe('basename', () => {
   it('handles / and \\ separators', () => {
@@ -46,15 +46,26 @@ describe('liveRate', () => {
   });
 });
 
-describe('toM', () => {
-  it('converts k to M and passes through M', () => {
-    expect(toM('3000k')).toBe('3M');
-    expect(toM('1400k')).toBe('1.4M');
-    expect(toM('3M')).toBe('3M');
+describe('normalizeBitrate', () => {
+  it('keeps values that already carry a unit (k/M/G), normalising the unit', () => {
+    expect(normalizeBitrate('1500k')).toBe('1500k');
+    expect(normalizeBitrate('3M')).toBe('3M');
+    expect(normalizeBitrate('3m')).toBe('3M');
+    expect(normalizeBitrate('0.001G')).toBe('1M');
   });
-  it('defaults to 3M for falsy or non-numeric', () => {
-    expect(toM('')).toBe('3M');
-    expect(toM(null)).toBe('3M');
-    expect(toM('abc')).toBe('3M');
+  it('treats a bare small number as Mbps (the bug: "2" must not become 2 bit/s)', () => {
+    expect(normalizeBitrate('2')).toBe('2M');
+    expect(normalizeBitrate('1.5')).toBe('1.5M');
+    expect(normalizeBitrate('6')).toBe('6M');
+  });
+  it('treats a bare large number as kbps', () => {
+    expect(normalizeBitrate('1500')).toBe('1500k');
+    expect(normalizeBitrate('3000')).toBe('3000k');
+  });
+  it('falls back to 3M for empty, junk, or non-positive input', () => {
+    expect(normalizeBitrate('')).toBe('3M');
+    expect(normalizeBitrate(null)).toBe('3M');
+    expect(normalizeBitrate('abc')).toBe('3M');
+    expect(normalizeBitrate('0')).toBe('3M');
   });
 });

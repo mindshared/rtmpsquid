@@ -35,11 +35,21 @@ export const ls = (k, d) => {
   }
 };
 
-// Normalise a stored video bitrate to ffmpeg "M" form (e.g. legacy "3000k" -> "3M",
-// "1400k" -> "1.4M"); pass through values already in M.
-export const toM = (v) => {
-  if (!v) return '3M';
-  if (/m$/i.test(v)) return v;
-  const k = parseFloat(v);
-  return Number.isFinite(k) ? `${k / 1000}M` : '3M';
+// Normalise a user/stored video-bitrate value into a VALID ffmpeg bitrate string.
+// ffmpeg reads a bare number as bits/second, so "-b:v 2" is 2 bit/s ≈ 0 and
+// libx264 dies with "bitrate not specified" — but people type "2" meaning 2 Mbps.
+// We always attach a unit: a value already carrying k/M/G is kept (unit
+// normalised); a bare number < 50 is treated as Mbps and >= 50 as kbps (covers
+// the realistic 0.5–50 Mbps / 500–50000 kbps range). Junk falls back to 3M.
+export const normalizeBitrate = (v, fallback = '3M') => {
+  if (v == null) return fallback;
+  const m = /^\s*([\d.]+)\s*([kmg])?/i.exec(String(v));
+  if (!m) return fallback;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  const unit = (m[2] || '').toLowerCase();
+  if (unit === 'k') return `${n}k`;
+  if (unit === 'm') return `${n}M`;
+  if (unit === 'g') return `${n * 1000}M`;
+  return n < 50 ? `${n}M` : `${n}k`;
 };

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ls, toM } from '../lib/format';
+import { ls, normalizeBitrate } from '../lib/format';
 import { ADV_DEFAULTS } from '../lib/constants';
 
 /**
@@ -12,7 +12,7 @@ export function useEncoderSettings() {
   const [streamKey, _setStreamKey] = useState(ls('rs_key', ''));
   const [resolution, _setResolution] = useState(ls('rs_res', '1920x1080'));
   const [videoFit, _setVideoFit] = useState(ls('rs_fit', 'fit'));
-  const [bitrate, _setBitrate] = useState(toM(ls('rs_vb', '3M')));
+  const [bitrate, _setBitrate] = useState(normalizeBitrate(ls('rs_vb', '3M')));
   const [audioBitrate, _setAudioBitrate] = useState(ls('rs_ab', '160k'));
   const [fps, _setFps] = useState(ls('rs_fps', '30'));
   const [audioChannels, _setAudioChannels] = useState(ls('rs_ac', '2'));
@@ -70,7 +70,7 @@ export function useEncoderSettings() {
   // The encode-options payload shared by /start and the live /settings push.
   const buildEncodePayload = () => ({
     resolution,
-    bitrate,
+    bitrate: normalizeBitrate(bitrate),
     audioBitrate,
     audioChannels: parseInt(audioChannels, 10),
     fps: parseInt(fps, 10),

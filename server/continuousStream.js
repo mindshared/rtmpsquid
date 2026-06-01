@@ -31,6 +31,25 @@ const STALL_TIMEOUT_MS = 12_000; // no streamer progress for this long ⇒ link 
 const STALL_CHECK_MS = 3_000;    // how often the watchdog polls
 const RW_TIMEOUT_US = 20_000_000; // ffmpeg socket read/write timeout for the RTMP output (µs)
 
+// Coerce a video-bitrate value into a VALID ffmpeg bitrate string. ffmpeg reads a
+// bare number as bits/second, so "-b:v 2" is ~0 and libx264 aborts with "bitrate
+// not specified" (surfacing in the UI as a bogus "skipped unreadable file"). We
+// always attach a unit: values with k/M/G are kept; a bare number < 50 is Mbps
+// and >= 50 is kbps; junk/zero falls back. Defends against a stale client or a
+// direct API call sending a unitless number; the client normalises too.
+function normalizeVideoBitrate(v, fallback = '3000k') {
+  if (v == null) return fallback;
+  const m = /^\s*([\d.]+)\s*([kmg])?/i.exec(String(v));
+  if (!m) return fallback;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  const u = (m[2] || '').toLowerCase();
+  if (u === 'k') return `${n}k`;
+  if (u === 'm') return `${n}M`;
+  if (u === 'g') return `${n * 1000}M`;
+  return n < 50 ? `${n}M` : `${n}k`;
+}
+
 // Convert an ffmpeg bitrate string ("3M", "1.5M", "3000k", or bare bits) to kbps,
 // so we can derive bufsize regardless of which suffix the setting uses.
 function bitrateToKbps(s) {
@@ -111,7 +130,7 @@ export class ContinuousStream extends EventEmitter {
       width: w || 1920,
       height: h || 1080,
       fps: parseInt(options.fps, 10) || 30,
-      videoBitrate: options.bitrate || '3000k',
+      videoBitrate: normalizeVideoBitrate(options.bitrate),
       audioBitrate: options.audioBitrate || '160k',
       audioChannels: parseInt(options.audioChannels, 10) || 2,
       // 'fit' = letterbox/pillarbox with bars; 'stretch' = distort to fill;
@@ -206,7 +225,7 @@ export class ContinuousStream extends EventEmitter {
       width: w || cur.width,
       height: h || cur.height,
       fps: parseInt(options.fps, 10) || cur.fps,
-      videoBitrate: options.bitrate || cur.videoBitrate,
+      videoBitrate: options.bitrate ? normalizeVideoBitrate(options.bitrate) : cur.videoBitrate,
       audioBitrate: options.audioBitrate || cur.audioBitrate,
       audioChannels: parseInt(options.audioChannels, 10) || cur.audioChannels,
       fit: options.fit || cur.fit,
