@@ -9,7 +9,9 @@ function Notification({ message, type, onClose }) {
   return (
     <div className={`notification ${type}`} role="status">
       <p>{message}</p>
-      <button className="notification-close" onClick={onClose} aria-label="Dismiss">✕</button>
+      <button className="notification-close" onClick={onClose} aria-label="Dismiss">
+        ✕
+      </button>
     </div>
   );
 }

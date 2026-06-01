@@ -32,6 +32,7 @@ function Login({ onAuthed }) {
             id="token"
             type="password"
             value={value}
+            // eslint-disable-next-line jsx-a11y/no-autofocus -- single-purpose login field; focusing it is the expected UX
             autoFocus
             onChange={(e) => setValue(e.target.value)}
             placeholder="AUTH_TOKEN"

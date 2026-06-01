@@ -11,9 +11,11 @@ function FolderBrowser({ onSelectFolder, onClose }) {
     setLoading(true);
     try {
       const { data } = await api.post('/api/browse-directory', { directory: dirPath });
-      setDirectories(data.directories);
-      setCurrentPath(data.currentPath);
-      setParent(data.parent);
+      // Coerce defensively: a proxy/login HTML 200 (or any non-JSON body) would
+      // otherwise make `directories.map` throw and blank the browser modal.
+      setDirectories(Array.isArray(data?.directories) ? data.directories : []);
+      setCurrentPath(data?.currentPath || '');
+      setParent(data?.parent ?? null);
     } catch (error) {
       alert(error.response?.data?.error || 'Unable to open directory');
     } finally {
@@ -21,21 +23,37 @@ function FolderBrowser({ onSelectFolder, onClose }) {
     }
   };
 
-  useEffect(() => { browse(undefined); }, []); // starts at the media root
+  useEffect(() => {
+    browse(undefined);
+  }, []); // starts at the media root
 
   return (
     <div className="modal-overlay">
       <div className="card modal">
         <div className="card-head">
           <h2 style={{ border: 'none', margin: 0, padding: 0 }}>Select Folder</h2>
-          <button className="btn btn-danger btn-small" onClick={onClose}>✕</button>
+          <button className="btn btn-danger btn-small" onClick={onClose}>
+            ✕
+          </button>
         </div>
 
         <div className="path-bar">{currentPath || 'Media root'}</div>
 
         <div className="row" style={{ marginBottom: '1rem' }}>
-          <button className="btn btn-secondary" onClick={() => browse(parent)} disabled={!parent} style={{ flex: 1 }}>Go Up</button>
-          <button className="btn btn-primary" onClick={() => { onSelectFolder(currentPath); onClose(); }} disabled={!currentPath} style={{ flex: 2 }}>Select This Folder</button>
+          <button className="btn btn-secondary" onClick={() => browse(parent)} disabled={!parent} style={{ flex: 1 }}>
+            Go Up
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => {
+              onSelectFolder(currentPath);
+              onClose();
+            }}
+            disabled={!currentPath}
+            style={{ flex: 2 }}
+          >
+            Select This Folder
+          </button>
         </div>
 
         <div className="dir-list scrollable">
@@ -47,8 +65,18 @@ function FolderBrowser({ onSelectFolder, onClose }) {
             directories.map((dir) => (
               <div key={dir.path} className="dir-row">
                 <span className="dir-name">📁 {dir.name}</span>
-                <button className="btn btn-primary btn-small" onClick={() => { onSelectFolder(dir.path); onClose(); }}>Select</button>
-                <button className="btn btn-secondary btn-small" onClick={() => browse(dir.path)}>Open</button>
+                <button
+                  className="btn btn-primary btn-small"
+                  onClick={() => {
+                    onSelectFolder(dir.path);
+                    onClose();
+                  }}
+                >
+                  Select
+                </button>
+                <button className="btn btn-secondary btn-small" onClick={() => browse(dir.path)}>
+                  Open
+                </button>
               </div>
             ))
           )}
