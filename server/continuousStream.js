@@ -162,6 +162,35 @@ export class ContinuousStream extends EventEmitter {
     this._intentionalSkip = false; // set when the user hits Next, so the early
                                    // feeder exit isn't logged as an unreadable skip
     this._consecFails = 0;         // consecutive instant feeder failures (for backoff)
+
+    // Raw-ffmpeg visibility: a rolling ring of recent status ticks + stderr
+    // warnings from BOTH ffmpegs, so the dashboard can show exactly what ffmpeg
+    // is doing/saying right now (and we can catch a stuck-clock bitrate creep in
+    // the act). Capped so a long session can't grow it without bound.
+    this.log = [];                 // [{ t, src: 'streamer'|'feeder', kind: 'status'|'log', line }]
+    this.lastStatus = null;        // most recent reconstructed streamer status line
+    this._feederLastOutSec = null; // last output PTS the running feeder emitted, for
+                                   // content-accurate timeline stitching across files
+  }
+
+  // Append a raw ffmpeg line (status tick or stderr) to the rolling log and push
+  // it live to listeners. Kept small; the UI shows the tail.
+  _pushLog(src, kind, line) {
+    if (!line) return;
+    const entry = { t: Date.now(), src, kind, line: String(line).slice(0, 500) };
+    this.log.push(entry);
+    if (this.log.length > 250) this.log.splice(0, this.log.length - 250);
+    this.emit('ffmpeglog', { streamId: this.id, playlistId: this.playlistId, ...entry });
+  }
+
+  // Reconstruct ffmpeg's familiar one-line status from the -progress key/values
+  // (we run -nostats so that line isn't printed; this gives the user the same
+  // "frame=… time=… bitrate=… speed=…" they'd see on a console, plus drop/dup).
+  _statusLine(p) {
+    const kb = p.totalSize ? `${Math.round(p.totalSize / 1024)}kB` : 'N/A';
+    const t = p.outTime || (p.timeMs ? new Date(p.timeMs).toISOString().substr(11, 12) : 'N/A');
+    return `frame=${p.frame} fps=${(p.fps || 0).toFixed(0)} size=${kb} time=${t} `
+      + `bitrate=${p.bitrate || 'N/A'} speed=${p.speed || 'N/A'} drop=${p.dropFrames} dup=${p.dupFrames}`;
   }
 
   // Hot-swap encode settings without touching the running feeder or streamer.
@@ -307,13 +336,25 @@ export class ContinuousStream extends EventEmitter {
         const val = line.slice(idx + 1).trim();
         if (key === 'progress') {
           this.lastProgressAt = Date.now(); // feeds the stall watchdog
+          // Forward the FULL ffmpeg status, not just a few fields. out_time vs
+          // total_size is the key pair: if the link wedges, out_time freezes
+          // while total_size keeps climbing and the reported bitrate balloons —
+          // exposing that here is how we catch the "bitrate creeps to 3M" bug.
+          const outTimeUs = parseInt(progBuf.out_time_us || progBuf.out_time_ms || '0', 10);
           this.progress = {
-            timeMs: parseInt(progBuf.out_time_us || progBuf.out_time_ms || '0', 10) / 1000,
+            timeMs: outTimeUs / 1000,
+            outTime: progBuf.out_time || null,
             fps: parseFloat(progBuf.fps || '0'),
-            bitrate: progBuf.bitrate,
+            bitrate: progBuf.bitrate || null,
+            speed: progBuf.speed || null,
             frame: parseInt(progBuf.frame || '0', 10),
+            totalSize: parseInt(progBuf.total_size || '0', 10),
+            dropFrames: parseInt(progBuf.drop_frames || '0', 10),
+            dupFrames: parseInt(progBuf.dup_frames || '0', 10),
           };
-          this.emit('progress', { streamId: this.id, playlistId: this.playlistId, ...this.progress });
+          this.lastStatus = this._statusLine(this.progress);
+          this._pushLog('streamer', 'status', this.lastStatus);
+          this.emit('progress', { streamId: this.id, playlistId: this.playlistId, ...this.progress, statusLine: this.lastStatus });
           progBuf = {};
         } else {
           progBuf[key] = val;
@@ -322,7 +363,11 @@ export class ContinuousStream extends EventEmitter {
     });
 
     let stderrTail = '';
-    proc.stderr.on('data', d => { stderrTail = (stderrTail + d.toString()).slice(-2000); });
+    proc.stderr.on('data', (d) => {
+      const text = d.toString();
+      stderrTail = (stderrTail + text).slice(-2000);
+      for (const ln of text.split('\n')) { const t = ln.trim(); if (t) this._pushLog('streamer', 'log', t); }
+    });
 
     proc.on('exit', (code, signal) => {
       this._stopWatchdog(); // don't let it fire during the reconnect gap
@@ -421,14 +466,22 @@ export class ContinuousStream extends EventEmitter {
   }
 
   _spawnFeeder(kind, file = null, seek = null) {
-    // Advance the running TS base by however long the previous feeder ran, so
-    // the concatenated MPEG-TS the streamer copies stays monotonic across files
-    // (each feeder otherwise restarts its timestamps near zero, which the FLV
-    // muxer rejects as non-monotonic DTS). The small epsilon keeps it strictly
-    // increasing even for instant failures; overshoot only ever opens a forward
-    // gap, never a backward jump.
+    // Advance the running TS base so the concatenated MPEG-TS the streamer copies
+    // stays strictly monotonic across files (each feeder restarts its own output
+    // timestamps near zero). We advance by the PREVIOUS feeder's actual emitted
+    // duration — read from its -progress out_time, which is 0-based per file —
+    // plus exactly one frame. That lands the next file's first frame one frame
+    // after the last one: continuous, no gap, no near-colliding/duplicate DTS at
+    // the seam (the old wall-clock guess drifted into frame collisions). A
+    // wall-clock fallback covers the rare case where no progress tick arrived.
     const now = Date.now();
-    if (this.feederStartedAt != null) this.tsOffset += Math.max(0, (now - this.feederStartedAt) / 1000) + 0.25;
+    if (this.feederStartedAt != null) {
+      const frame = 1 / (this.opt.fps || 30);
+      const dur = this._feederLastOutSec != null
+        ? this._feederLastOutSec
+        : Math.max(0, (now - this.feederStartedAt) / 1000);
+      this.tsOffset += dur + frame;
+    }
     this.feederStartedAt = now;
     this.feederSeek = 0;
 
@@ -468,7 +521,10 @@ export class ContinuousStream extends EventEmitter {
     this.feederKind = kind;
 
     // Slate already builds its own filtergraph via lavfi; content needs -vf.
-    const args = ['-y', '-hide_banner', '-loglevel', 'error', ...inputArgs];
+    // -progress pipe:1 surfaces the encoder's own status (esp. speed=, which
+    // drops below 1x when the box can't encode in realtime) and gives us the
+    // feeder's last output PTS for accurate timeline stitching across files.
+    const args = ['-y', '-hide_banner', '-loglevel', 'error', '-progress', 'pipe:1', ...inputArgs];
     if (kind === 'content') {
       // Map exactly one real video + one (optional) audio stream and drop
       // everything else. -map 0:V:0 skips attached pictures / cover art that
@@ -479,12 +535,37 @@ export class ContinuousStream extends EventEmitter {
     }
     args.push(...this._feederOutputArgs());
 
-    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
     this.feeder = proc;
     this.firstFeed = false;
+    this._feederLastOutSec = null;
+    this._pushLog('feeder', 'log', `spawned ${kind}${file ? ' ' + path.basename(file) : ''} @ ts_offset=${this.tsOffset.toFixed(3)}${seek != null ? ` seek=${Number(seek).toFixed(1)}s` : ''}`);
+
+    // Feeder -progress on stdout: track the last output PTS (for stitching) and
+    // surface the encoder's status line in the shared log.
+    let fProg = {};
+    proc.stdout.on('data', (chunk) => {
+      for (const line of chunk.toString().split('\n')) {
+        const i = line.indexOf('=');
+        if (i === -1) continue;
+        const k = line.slice(0, i).trim();
+        const v = line.slice(i + 1).trim();
+        if (k === 'progress') {
+          const us = parseInt(fProg.out_time_us || fProg.out_time_ms || '0', 10);
+          if (us > 0) this._feederLastOutSec = us / 1_000_000;
+          this._pushLog('feeder', 'status',
+            `time=${fProg.out_time || 'N/A'} fps=${fProg.fps || '0'} speed=${fProg.speed || 'N/A'} frame=${fProg.frame || '0'}`);
+          fProg = {};
+        } else { fProg[k] = v; }
+      }
+    });
 
     let errTail = '';
-    proc.stderr.on('data', d => { errTail = (errTail + d.toString()).slice(-1000); });
+    proc.stderr.on('data', (d) => {
+      const text = d.toString();
+      errTail = (errTail + text).slice(-1000);
+      for (const ln of text.split('\n')) { const t = ln.trim(); if (t) this._pushLog('feeder', 'log', t); }
+    });
 
     proc.on('exit', (code) => {
       if (this.stopping || this.feeder !== proc) return;
@@ -569,6 +650,7 @@ export class ContinuousStream extends EventEmitter {
     try { this.holderFd = fs.openSync(this.fifoPath, 'r+'); } catch {}
     this.tsOffset = 0;
     this.feederStartedAt = null;
+    this._feederLastOutSec = null;
   }
 
   _cleanup() {
@@ -593,6 +675,8 @@ export class ContinuousStream extends EventEmitter {
       videoBitrate: this.opt.videoBitrate,
       audioBitrate: this.opt.audioBitrate,
       autoRestart: this.autoRestart,
+      lastStatus: this.lastStatus,
+      log: this.log.slice(-80),
     };
   }
 }

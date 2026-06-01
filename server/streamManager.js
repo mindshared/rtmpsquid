@@ -179,6 +179,7 @@ export class StreamManager {
 
   _attachEvents(cs) {
     cs.on('progress', (d) => this.io.emit('stream:progress', d));
+    cs.on('ffmpeglog', (d) => this.io.emit('stream:ffmpeg', d));
     cs.on('standby', (d) => this.io.emit('stream:standby', d));
     cs.on('reconnecting', (d) => this.io.emit('stream:reconnecting', d));
     cs.on('fileskipped', (d) => this.io.emit('stream:fileskipped', d));
