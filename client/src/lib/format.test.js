@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { basename, niceName, elapsed, liveRate, normalizeBitrate, fmtDuration } from './format';
+import { basename, niceName, elapsed, liveRate, normalizeBitrate, fmtDuration, fmtBytes } from './format';
 
 describe('basename', () => {
   it('handles / and \\ separators', () => {
@@ -43,6 +43,19 @@ describe('liveRate', () => {
     expect(liveRate('N/A')).toBeNull();
     expect(liveRate(null)).toBeNull();
     expect(liveRate('garbage')).toBeNull();
+  });
+});
+
+describe('fmtBytes', () => {
+  it('formats KB/MB/GB', () => {
+    expect(fmtBytes(512 * 1024)).toBe('512 KB');
+    expect(fmtBytes(266 * 1024 * 1024)).toBe('266 MB');
+    expect(fmtBytes(1.4 * 1024 * 1024 * 1024)).toBe('1.4 GB');
+  });
+  it('returns empty for invalid', () => {
+    expect(fmtBytes(null)).toBe('');
+    expect(fmtBytes(-1)).toBe('');
+    expect(fmtBytes(undefined)).toBe('');
   });
 });
 

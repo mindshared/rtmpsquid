@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import { config, ensureDirs } from './config.js';
 import { requireAuth, socketAuth, resolveWithinRoot, assertSafeStreamUrl } from './security.js';
 import { StreamManager } from './streamManager.js';
+import { startStats, getStats } from './stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +40,10 @@ app.use('/api', rateLimit({ windowMs: 60_000, max: 600, standardHeaders: true, l
 
 const streamManager = new StreamManager(io);
 
+// Background resource sampler: feeds GET /api/stats and the periodic `stats`
+// socket event (Node process + its ffmpeg children + system context).
+startStats(io, () => streamManager.getProcPids());
+
 const h = (fn) => (req, res) => Promise.resolve().then(() => fn(req, res)).catch((err) => {
   res.status(err.status || 500).json({ error: err.message });
 });
@@ -52,6 +57,7 @@ app.use('/api', requireAuth);
 app.get('/api/auth/check', (req, res) => res.json({ ok: true }));
 app.get('/api/health', (req, res) => res.json({ status: 'ok', mediaRoot: config.mediaRoot, streams: streamManager.getActiveStreams() }));
 app.get('/api/streams', (req, res) => res.json(streamManager.getActiveStreams()));
+app.get('/api/stats', (req, res) => res.json(getStats()));
 
 // ---- folder browsing (for the library picker; confined to mediaRoot) ----
 app.post('/api/browse-directory', h((req, res) => {

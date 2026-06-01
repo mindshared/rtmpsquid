@@ -4,6 +4,7 @@ import { basename } from '../lib/format';
 import { useLibrary } from '../hooks/useLibrary';
 import { useEncoderSettings } from '../hooks/useEncoderSettings';
 import { useFfmpegLog } from '../hooks/useFfmpegLog';
+import { useStats } from '../hooks/useStats';
 import ErrorBoundary from './ErrorBoundary';
 import AppBar from './AppBar';
 import NowPlaying from './NowPlaying';
@@ -25,6 +26,7 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
   const settings = useEncoderSettings();
   const { library, refetchLibrary } = useLibrary(socket);
   const { entries: ffmpegLog, lastStatus } = useFfmpegLog(socket, streamStatus?.log);
+  const stats = useStats(socket);
 
   const [query, setQuery] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -147,6 +149,7 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
           streaming={streaming}
           paused={paused}
           busy={busy}
+          stats={stats}
           onReshuffle={reshuffle}
           onOpenSettings={() => setDrawerOpen(true)}
           onPause={pause}

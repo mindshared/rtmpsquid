@@ -694,6 +694,18 @@ export class ContinuousStream extends EventEmitter {
     try { fs.unlinkSync(this.titleFile); } catch {}
   }
 
+  // Live ffmpeg child processes (for resource sampling). Only those still running.
+  getProcs() {
+    const out = [];
+    if (this.streamer && this.streamer.pid && this.streamer.exitCode == null) {
+      out.push({ role: 'streamer', pid: this.streamer.pid });
+    }
+    if (this.feeder && this.feeder.pid && this.feeder.exitCode == null) {
+      out.push({ role: this.feederKind === 'slate' ? 'slate' : 'feeder', pid: this.feeder.pid });
+    }
+    return out;
+  }
+
   getStatus() {
     return {
       id: this.id,

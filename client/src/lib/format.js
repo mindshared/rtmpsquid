@@ -15,6 +15,14 @@ export const elapsed = (ms) => {
   return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map((n) => String(n).padStart(2, '0')).join(':');
 };
 
+// bytes -> compact human size ("266 MB", "1.4 GB"); '' for unknown/invalid.
+export const fmtBytes = (b) => {
+  if (b == null || !Number.isFinite(b) || b < 0) return '';
+  if (b < 1024 * 1024) return `${Math.round(b / 1024)} KB`;
+  if (b < 1024 * 1024 * 1024) return `${Math.round(b / (1024 * 1024))} MB`;
+  return `${(b / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
 // seconds -> compact clock ("5:20", "1:02:05"); '' for unknown/invalid so the UI
 // can simply omit it.
 export const fmtDuration = (sec) => {

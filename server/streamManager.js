@@ -401,6 +401,11 @@ export class StreamManager {
     return this.stream ? [this.stream.getStatus()] : [];
   }
 
+  // Live ffmpeg pids ([{ role, pid }]) for the resource sampler, or [] when idle.
+  getProcPids() {
+    return this.stream ? this.stream.getProcs() : [];
+  }
+
   async stopAllStreams() {
     if (this.stream) { await this.stream.stop().catch(() => {}); this.stream = null; }
   }

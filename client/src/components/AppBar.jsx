@@ -1,3 +1,25 @@
+import { fmtBytes } from '../lib/format';
+
+const pct = (n) => Math.round(n || 0);
+
+// Compact live resource chip (CPU % of one core + total RSS) with a per-process
+// breakdown in the tooltip. Renders nothing until the first stats snapshot.
+function StatsChip({ stats }) {
+  if (!stats || !stats.total) return null;
+  const cores = stats.system?.cores || 1;
+  const tip = [
+    `Node: ${pct(stats.node?.cpuPct)}% CPU · ${fmtBytes(stats.node?.rssBytes)}`,
+    ...(stats.ffmpeg || []).map((p) => `${p.role}: ${pct(p.cpuPct)}% CPU · ${fmtBytes(p.rssBytes)}`),
+    `Total: ${pct(stats.total.cpuPct)}% of 1 core  (~${pct(stats.total.cpuPct / cores)}% of ${cores} cores)`,
+    `System: load ${(stats.system?.loadavg?.[0] || 0).toFixed(2)} · ${fmtBytes(stats.system?.freeMem)} free of ${fmtBytes(stats.system?.totalMem)}`,
+  ].join('\n');
+  return (
+    <span className="appbar-stats" title={tip}>
+      ▣ {pct(stats.total.cpuPct)}% · {fmtBytes(stats.total.rssBytes)}
+    </span>
+  );
+}
+
 // Top bar: brand + context actions. Which transport button shows depends on
 // whether we're live, paused, or idle.
 export default function AppBar({
@@ -5,6 +27,7 @@ export default function AppBar({
   streaming,
   paused,
   busy,
+  stats,
   onReshuffle,
   onOpenSettings,
   onPause,
@@ -16,6 +39,7 @@ export default function AppBar({
   return (
     <header className="appbar">
       <div className="brand">🦑 RTMP Squid</div>
+      <StatsChip stats={stats} />
       <div className="appbar-actions">
         {hasLibrary && (
           <button

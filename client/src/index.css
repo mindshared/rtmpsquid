@@ -961,6 +961,15 @@ code {
   font-weight: 700;
   letter-spacing: -0.5px;
 }
+.appbar-stats {
+  margin-left: 0.9rem;
+  margin-right: auto; /* keep it beside the brand; actions stay right */
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  color: #6a9a6a;
+  white-space: nowrap;
+  cursor: default;
+}
 .appbar-actions {
   display: flex;
   gap: 0.5rem;
