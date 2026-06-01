@@ -209,6 +209,9 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
                 setOverIndex={setOverIndex}
                 dropAt={dropAt}
                 removeAt={removeAt}
+                durations={queue?.durations || {}}
+                totalSeconds={queue?.totalSeconds || 0}
+                totalKnown={queue?.totalKnown !== false}
               />
             </ErrorBoundary>
           </main>

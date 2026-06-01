@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { niceName, basename } from '../lib/format';
+import { niceName, basename, fmtDuration } from '../lib/format';
 import { LIB_PAGE } from '../lib/constants';
 
 const EMPTY = []; // stable reference so the useMemo below isn't busted every render
@@ -7,6 +7,7 @@ const EMPTY = []; // stable reference so the useMemo below isn't busted every re
 // Browseable library (right column). Search + pagination state is local to this
 // panel since nothing else needs it. Rows are draggable into the queue; + adds.
 export default function LibraryPanel({ library, dragRef, addAt }) {
+  const durations = library?.durations || {};
   const [libQuery, setLibQuery] = useState('');
   const [libPage, setLibPage] = useState(0);
 
@@ -54,6 +55,7 @@ export default function LibraryPanel({ library, dragRef, addAt }) {
           >
             <span className="lib-handle">⠿</span>
             <span className="lib-name">{niceName(path)}</span>
+            {durations[path] ? <span className="lib-dur">{fmtDuration(durations[path])}</span> : null}
             <button className="icon-btn" title="Add to queue" onClick={() => addAt(path, null)}>
               ＋
             </button>

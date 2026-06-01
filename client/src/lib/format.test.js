@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { basename, niceName, elapsed, liveRate, normalizeBitrate } from './format';
+import { basename, niceName, elapsed, liveRate, normalizeBitrate, fmtDuration } from './format';
 
 describe('basename', () => {
   it('handles / and \\ separators', () => {
@@ -43,6 +43,20 @@ describe('liveRate', () => {
     expect(liveRate('N/A')).toBeNull();
     expect(liveRate(null)).toBeNull();
     expect(liveRate('garbage')).toBeNull();
+  });
+});
+
+describe('fmtDuration', () => {
+  it('formats m:ss and h:mm:ss', () => {
+    expect(fmtDuration(320)).toBe('5:20');
+    expect(fmtDuration(5)).toBe('0:05');
+    expect(fmtDuration(3725)).toBe('1:02:05');
+  });
+  it('returns empty string for unknown/invalid', () => {
+    expect(fmtDuration(null)).toBe('');
+    expect(fmtDuration(0)).toBe('');
+    expect(fmtDuration(undefined)).toBe('');
+    expect(fmtDuration(NaN)).toBe('');
   });
 });
 

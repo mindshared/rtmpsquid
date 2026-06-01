@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import fsp from 'fs/promises';
@@ -26,6 +27,7 @@ export class StreamManager {
     this.order = 'shuffle';                        // 'shuffle' | 'sequential'
     this._seqIndex = 0;                            // cursor into the sorted library for sequential play
     this.minMovieMB = config.minMovieBytes / (1024 * 1024); // smallest file allowed in the library
+    this._durations = new Map(); // absolute path -> { seconds: number|null, sig: 'mtimeMs:size' } (ffprobe cache)
 
     // Auto-load the default library on boot so it "just plays" out of the box.
     if (config.libraryDir) this.setLibrary(config.libraryDir).catch((e) => console.error('library load:', e.message));
@@ -67,12 +69,85 @@ export class StreamManager {
     this._refill();
     this.io.emit('library:updated', this.getLibrary());
     this.io.emit('queue:updated', this.getQueue());
+    // Probe durations in the background; emits library/queue updates as they fill.
+    this._ensureDurations(this.library.files).catch(() => {});
     return this.getQueue();
   }
 
   // Full library list (for the browseable side panel).
   getLibrary() {
-    return { folder: this.library.folder, files: this.library.files, minMovieMB: this.minMovieMB };
+    return {
+      folder: this.library.folder,
+      files: this.library.files,
+      minMovieMB: this.minMovieMB,
+      durations: this._durationsFor(this.library.files),
+    };
+  }
+
+  // ---- movie durations (ffprobe, cached by mtime+size) ---------------------
+
+  // Build a { path: seconds } map from the cache for the given files (only
+  // includes ones already probed; unknown ones are simply absent).
+  _durationsFor(files) {
+    const out = {};
+    for (const f of files || []) {
+      const c = this._durations.get(f);
+      if (c && c.seconds != null) out[f] = c.seconds;
+    }
+    return out;
+  }
+
+  // Probe one file's duration (seconds), reusing the cache unless the file
+  // changed (mtime/size). Never throws; returns null if it can't be read.
+  _probeDuration(file) {
+    return new Promise((resolve) => {
+      let st;
+      try { st = fs.statSync(file); } catch { return resolve(null); }
+      const sig = `${st.mtimeMs}:${st.size}`;
+      const cached = this._durations.get(file);
+      if (cached && cached.sig === sig) return resolve(cached.seconds);
+      let out = '';
+      let proc;
+      try {
+        proc = spawn('ffprobe', ['-v', 'error', '-show_entries', 'format=duration',
+          '-of', 'default=nokey=1:noprint_wrappers=1', file], { stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch { return resolve(cached?.seconds ?? null); }
+      proc.stdout.on('data', (d) => { out += d.toString(); });
+      proc.on('error', () => resolve(cached?.seconds ?? null));
+      proc.on('exit', () => {
+        const n = parseFloat(out.trim());
+        const seconds = Number.isFinite(n) && n > 0 ? n : null;
+        this._durations.set(file, { seconds, sig });
+        resolve(seconds);
+      });
+    });
+  }
+
+  // Fill in durations for a set of files in the background (bounded concurrency),
+  // emitting updates as results stream in so the UI fills progressively even for
+  // a large library. Fire-and-forget; cached files resolve instantly.
+  async _ensureDurations(files) {
+    const list = [...new Set((files || []).filter(Boolean))];
+    if (!list.length) return;
+    let idx = 0;
+    let newly = 0;
+    const emit = () => {
+      this.io.emit('library:updated', this.getLibrary());
+      this.io.emit('queue:updated', this.getQueue());
+    };
+    const worker = async () => {
+      while (idx < list.length) {
+        const f = list[idx++];
+        const had = this._durations.get(f);
+        const sec = await this._probeDuration(f);
+        if (sec != null && (!had || had.seconds !== sec)) {
+          newly += 1;
+          if (newly % 24 === 0) emit(); // stream partial results for big libraries
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]); // 4-way concurrency
+    if (newly) emit();
   }
 
   // ---- queue management ----------------------------------------------------
@@ -124,6 +199,15 @@ export class StreamManager {
   }
 
   getQueue() {
+    // Per-movie durations for the queued files, plus the queue's known total.
+    const durations = this._durationsFor(this.queue);
+    let totalSeconds = 0;
+    let totalKnown = this.queue.length > 0;
+    for (const f of this.queue) {
+      const c = this._durations.get(f);
+      if (c && c.seconds != null) totalSeconds += c.seconds;
+      else totalKnown = false;
+    }
     return {
       library: this.library.folder,
       libraryCount: this.library.files.length,
@@ -138,6 +222,9 @@ export class StreamManager {
       resumeFile: this.paused && this.resumePoint?.file ? path.basename(this.resumePoint.file) : null,
       resumeOffset: this.paused && this.resumePoint ? Math.round(this.resumePoint.offset || 0) : null,
       autoRestart: this.autoRestart,
+      durations, // { absolutePath: seconds } for the queued files
+      totalSeconds: Math.round(totalSeconds), // sum of known queued durations
+      totalKnown, // false while some queued durations are still being probed
     };
   }
 
@@ -152,6 +239,7 @@ export class StreamManager {
   addToQueue(file, index = null) {
     if (index == null || Number.isNaN(index) || index < 0 || index > this.queue.length) this.queue.push(file);
     else this.queue.splice(index, 0, file);
+    this._ensureDurations([file]).catch(() => {}); // probe it if not already cached
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }

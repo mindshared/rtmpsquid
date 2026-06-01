@@ -15,6 +15,17 @@ export const elapsed = (ms) => {
   return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60].map((n) => String(n).padStart(2, '0')).join(':');
 };
 
+// seconds -> compact clock ("5:20", "1:02:05"); '' for unknown/invalid so the UI
+// can simply omit it.
+export const fmtDuration = (sec) => {
+  if (sec == null || !Number.isFinite(sec) || sec <= 0) return '';
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
+};
+
 // ffmpeg reports the live streamer throughput as e.g. "1234.5kbits/s" (or "N/A"
 // before the first frame). Normalise to a tidy "1235k" or null.
 export const liveRate = (raw) => {

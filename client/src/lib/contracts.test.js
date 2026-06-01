@@ -34,15 +34,16 @@ describe('normalizeQueue', () => {
 });
 
 describe('normalizeLibrary', () => {
-  it('always returns folder+files', () => {
-    expect(normalizeLibrary(null)).toEqual({ folder: null, files: [] });
-    expect(normalizeLibrary({ folder: 'x' })).toEqual({ folder: 'x', files: [] });
-    expect(normalizeLibrary({ files: 'oops' })).toEqual({ folder: null, files: [] });
+  it('always returns folder+files+durations', () => {
+    expect(normalizeLibrary(null)).toEqual({ folder: null, files: [], durations: {} });
+    expect(normalizeLibrary({ folder: 'x' })).toEqual({ folder: 'x', files: [], durations: {} });
+    expect(normalizeLibrary({ files: 'oops' })).toEqual({ folder: null, files: [], durations: {} });
   });
-  it('preserves minMovieMB when present', () => {
-    expect(normalizeLibrary({ folder: 'x', files: ['a'], minMovieMB: 5 })).toEqual({
+  it('preserves minMovieMB and durations when present', () => {
+    expect(normalizeLibrary({ folder: 'x', files: ['a'], minMovieMB: 5, durations: { a: 12 } })).toEqual({
       folder: 'x',
       files: ['a'],
+      durations: { a: 12 },
       minMovieMB: 5,
     });
   });

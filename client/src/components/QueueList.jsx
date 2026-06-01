@@ -1,4 +1,4 @@
-import { niceName } from '../lib/format';
+import { niceName, fmtDuration } from '../lib/format';
 
 // The "Up Next" list: search, drag-to-reorder, and drag-from-library targets.
 // Drag state (dragRef/overIndex) and the drop handler live in the orchestrator
@@ -16,7 +16,11 @@ export default function QueueList({
   setOverIndex,
   dropAt,
   removeAt,
+  durations = {},
+  totalSeconds = 0,
+  totalKnown = true,
 }) {
+  const total = fmtDuration(totalSeconds);
   return (
     <section
       className="queue"
@@ -28,7 +32,9 @@ export default function QueueList({
       <div className="queue-head">
         <div>
           <h2 className="queue-title">Up Next</h2>
-          <span className="muted">{files.length} queued · auto-fills under 5</span>
+          <span className="muted">
+            {files.length} queued · auto-fills under 5{total ? ` · ${total}${totalKnown ? '' : '+'} total` : ''}
+          </span>
         </div>
         <input
           className="search"
@@ -74,6 +80,7 @@ export default function QueueList({
                 )}
                 <span className="track-num">{playing ? '♪' : index + 1}</span>
                 <span className="track-name">{niceName(path)}</span>
+                {durations[path] ? <span className="track-dur">{fmtDuration(durations[path])}</span> : null}
                 <div className="track-actions">
                   <button className="icon-btn danger" title="Remove" onClick={() => removeAt(index)}>
                     ✕

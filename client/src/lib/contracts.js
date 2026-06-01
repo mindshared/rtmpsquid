@@ -21,6 +21,9 @@
  * @property {string|null} [resumeFile]
  * @property {number|null} [resumeOffset]
  * @property {boolean} [autoRestart]
+ * @property {Object<string, number>} [durations] map of queued path -> seconds
+ * @property {number} [totalSeconds] sum of known queued durations
+ * @property {boolean} [totalKnown] false while some queued durations are still probing
  */
 
 /**
@@ -28,6 +31,7 @@
  * @property {string|null} folder
  * @property {string[]} files
  * @property {number} [minMovieMB]
+ * @property {Object<string, number>} [durations] map of library path -> seconds
  */
 
 /**
@@ -99,6 +103,7 @@ export const normalizeQueue = (raw) =>
 export const normalizeLibrary = (raw) => ({
   folder: isObj(raw) ? (raw.folder ?? null) : null,
   files: arr(isObj(raw) ? raw.files : null),
+  durations: isObj(raw) && isObj(raw.durations) ? raw.durations : {},
   ...(isObj(raw) && raw.minMovieMB != null ? { minMovieMB: raw.minMovieMB } : {}),
 });
 

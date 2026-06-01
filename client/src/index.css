@@ -1211,6 +1211,20 @@ code {
   border-radius: 10px;
   flex: none;
 }
+.track-dur {
+  flex: none;
+  color: #777;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.4rem;
+}
+.lib-dur {
+  flex: none;
+  color: #777;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  margin-left: 0.4rem;
+}
 .track-actions {
   display: flex;
   gap: 0.25rem;
