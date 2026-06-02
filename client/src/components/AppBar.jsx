@@ -2,20 +2,24 @@ import { fmtBytes } from '../lib/format';
 
 const pct = (n) => Math.round(n || 0);
 
-// Compact live resource chip (CPU % of one core + total RSS) with a per-process
-// breakdown in the tooltip. Renders nothing until the first stats snapshot.
+// Compact live resource chip. The headline CPU number is the share of TOTAL
+// system capacity (across all cores), so it stays 0–100% and reads sensibly on
+// multi-core boxes; the tooltip keeps the raw per-process "% of one core"
+// breakdown. Renders nothing until the first stats snapshot.
 function StatsChip({ stats }) {
   if (!stats || !stats.total) return null;
   const cores = stats.system?.cores || 1;
+  // Sum of per-process "% of one core" ÷ cores = % of the whole machine.
+  const cpuAll = Math.min(100, Math.round((stats.total.cpuPct || 0) / cores));
   const tip = [
-    `Node: ${pct(stats.node?.cpuPct)}% CPU · ${fmtBytes(stats.node?.rssBytes)}`,
-    ...(stats.ffmpeg || []).map((p) => `${p.role}: ${pct(p.cpuPct)}% CPU · ${fmtBytes(p.rssBytes)}`),
-    `Total: ${pct(stats.total.cpuPct)}% of 1 core  (~${pct(stats.total.cpuPct / cores)}% of ${cores} cores)`,
+    `Node: ${pct(stats.node?.cpuPct)}% of a core · ${fmtBytes(stats.node?.rssBytes)}`,
+    ...(stats.ffmpeg || []).map((p) => `${p.role}: ${pct(p.cpuPct)}% of a core · ${fmtBytes(p.rssBytes)}`),
+    `Total CPU: ${cpuAll}% of ${cores} core${cores === 1 ? '' : 's'}  (${pct(stats.total.cpuPct)}% of one core)`,
     `System: load ${(stats.system?.loadavg?.[0] || 0).toFixed(2)} · ${fmtBytes(stats.system?.freeMem)} free of ${fmtBytes(stats.system?.totalMem)}`,
   ].join('\n');
   return (
     <span className="appbar-stats" title={tip}>
-      ▣ {pct(stats.total.cpuPct)}% · {fmtBytes(stats.total.rssBytes)}
+      ▣ {cpuAll}% CPU · {fmtBytes(stats.total.rssBytes)}
     </span>
   );
 }
