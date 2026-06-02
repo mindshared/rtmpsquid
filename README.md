@@ -52,6 +52,16 @@ npm start
 
 Prefer containers? See **[DEPLOYMENT.md](DEPLOYMENT.md)** for the Docker / Docker Compose setup — FFmpeg is bundled in the image, so there's no host-level dependency beyond Docker.
 
+### Uninstall
+
+```bash
+./uninstall.sh            # stop the app + remove the systemd service (keeps files & media)
+./uninstall.sh --purge    # also delete node_modules, the client build, and .env
+./uninstall.sh --media    # also delete the media library (asks first)
+```
+
+Idempotent, and discovers the install location from the service, so it works whatever directory/user it was installed under.
+
 ## Reaching the dashboard
 
 The server binds to `127.0.0.1` by default. Tunnel in over SSH:
