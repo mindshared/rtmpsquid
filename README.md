@@ -30,6 +30,8 @@ cd rtmpsquid
 
 `setup.sh` is idempotent — safe to re-run any time. It verifies Node and FFmpeg, installs dependencies, builds the web client, writes a `.env` with a freshly generated `AUTH_TOKEN`, and creates your media directory. On Linux with systemd it also installs and starts a `rtmpsquid` service that auto-starts on boot and restarts on crash.
 
+When it generates a fresh `.env`, an interactive run **asks how the dashboard should bind** — loopback only (reach it over an SSH tunnel, the secure default) or public on the server's IP (`0.0.0.0`, sets `HOST` + `ALLOWED_ORIGINS` for you). Choose non-interactively with `./setup.sh --local` or `./setup.sh --public`. Public bind is plain HTTP, so use it only on a trusted network/VPN or behind a TLS reverse proxy (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
 To skip the service and start manually instead: `./setup.sh --no-service`.
 
 ## Running it
