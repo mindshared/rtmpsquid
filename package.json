@@ -1,7 +1,7 @@
 {
   "name": "rtmpsquid",
   "version": "1.0.0",
-  "description": "Stream video files directly to RTMP servers - Cross-platform (Windows, macOS, Linux)",
+  "description": "Stream video files directly to RTMP servers - Linux and macOS",
   "main": "server/index.js",
   "type": "module",
   "scripts": {

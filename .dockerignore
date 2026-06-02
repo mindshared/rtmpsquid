@@ -12,7 +12,4 @@ coverage/
 .DS_Store
 Thumbs.db
 setup.sh
-setup.bat
-setup.ps1
 README.md
-DOCKER_PLAN.md
