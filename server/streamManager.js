@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from 'uuid';
+import { randomUUID } from 'crypto';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
@@ -301,7 +301,7 @@ export class StreamManager {
     this.autoRestart = options.autoRestart !== false;
     this.paused = false;
 
-    const streamId = uuidv4();
+    const streamId = randomUUID();
     let first = true;
 
     // Provider: play queue[0]; when it finishes, drop it, refill, play the new
