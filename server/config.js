@@ -42,6 +42,12 @@ export const config = {
   host: process.env.HOST || '127.0.0.1',
   port: parseInt(process.env.PORT || '3001', 10),
 
+  // Optional direct TLS: when both a cert and key path are set (e.g. the
+  // self-signed pair setup.sh --https generates), the server serves HTTPS/WSS
+  // itself — no reverse proxy needed. Browsers show a one-time self-signed warning.
+  tlsCert: process.env.TLS_CERT || '',
+  tlsKey: process.env.TLS_KEY || '',
+
   // The only directory the app may read media from. Everything is confined here.
   mediaRoot,
   // The library the auto-queue draws random movies from (defaults to the media root).

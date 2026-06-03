@@ -4,6 +4,7 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
+import { createServer as createHttpsServer } from 'https';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -19,7 +20,14 @@ ensureDirs();
 
 const app = express();
 app.set('trust proxy', 'loopback');
-const httpServer = createServer(app);
+
+// Serve HTTPS directly when a cert/key pair is configured (e.g. self-signed from
+// setup.sh --https); otherwise plain HTTP. socket.io rides the same server, so it
+// upgrades to wss automatically. For a *trusted* cert, front this with a TLS proxy.
+const tlsReady = config.tlsCert && config.tlsKey && fs.existsSync(config.tlsCert) && fs.existsSync(config.tlsKey);
+const httpServer = tlsReady
+  ? createHttpsServer({ key: fs.readFileSync(config.tlsKey), cert: fs.readFileSync(config.tlsCert) }, app)
+  : createServer(app);
 
 const corsOptions = {
   origin(origin, cb) {
@@ -128,7 +136,7 @@ app.get('*', (req, res) => res.sendFile(path.join(__dirname, '../client/dist/ind
 io.on('connection', (socket) => { socket.on('disconnect', () => {}); });
 
 httpServer.listen(config.port, config.host, () => {
-  console.log(`🦑 RTMP Squid on http://${config.host}:${config.port}`);
+  console.log(`🦑 RTMP Squid on ${tlsReady ? 'https' : 'http'}://${config.host}:${config.port}`);
   console.log(`📁 Media root: ${config.mediaRoot}`);
   console.log(`🎬 Library:    ${config.libraryDir}`);
   if (config.authTokenGenerated) {
