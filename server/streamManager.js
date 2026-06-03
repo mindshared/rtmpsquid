@@ -15,6 +15,7 @@ export class StreamManager {
   constructor(io) {
     this.io = io;
     this.library = { folder: null, files: [] }; // the pool of all movies
+    this.excluded = new Set();                    // library paths the user parked (X) — skipped by auto-fill
     this.queue = [];                              // upcoming list (queue[0] = now playing)
     this.currentFile = null;
     this.stream = null;                           // ContinuousStream | null
@@ -81,7 +82,34 @@ export class StreamManager {
       files: this.library.files,
       minMovieMB: this.minMovieMB,
       durations: this._durationsFor(this.library.files),
+      excluded: [...this.excluded], // parked files the auto-queue won't pull
     };
+  }
+
+  // Movies eligible for auto-fill: the library minus anything the user parked
+  // with the X button. Parking every file yields an empty pool, in which case
+  // the queue simply can't top up (same effect as an empty library).
+  _autoPool() {
+    return this.excluded.size ? this.library.files.filter((f) => !this.excluded.has(f)) : this.library.files;
+  }
+
+  // Park (excluded=true) or un-park a library file. Parking also drops any
+  // not-yet-played copies already sitting in the queue, but keeps the
+  // currently-playing one so we never cut a movie off mid-play. Un-parking just
+  // makes the file eligible for future refills again.
+  setExcluded(file, excluded = true) {
+    if (!file) return this.getLibrary();
+    if (excluded) {
+      this.excluded.add(file);
+      const head = this.stream ? this.currentFile : null; // keep the now-playing copy
+      this.queue = this.queue.filter((f, i) => f !== file || (i === 0 && f === head));
+      this._refill();
+      this.io.emit('queue:updated', this.getQueue());
+    } else if (!this.excluded.delete(file)) {
+      return this.getLibrary(); // wasn't parked — nothing changed, skip the broadcast
+    }
+    this.io.emit('library:updated', this.getLibrary());
+    return this.getLibrary();
   }
 
   // ---- movie durations (ffprobe, cached by mtime+size) ---------------------
@@ -172,8 +200,11 @@ export class StreamManager {
     if (!this.library.files.length) return;
     if (this.queue.length >= config.queueMin) return;
 
+    const pool = this._autoPool();
+    if (!pool.length) return; // every movie is parked — nothing to pull
+
     if (this.order === 'sequential') {
-      const sorted = this._sortedLibrary();
+      const sorted = this._sortedLibrary().filter((f) => !this.excluded.has(f));
       while (this.queue.length < config.queueTarget) {
         this.queue.push(sorted[this._seqIndex % sorted.length]);
         this._seqIndex = (this._seqIndex + 1) % sorted.length;
@@ -182,19 +213,19 @@ export class StreamManager {
     }
 
     const inUse = new Set([...this.queue, ...(this.currentFile ? [this.currentFile] : [])]);
-    for (const f of this._shuffle(this.library.files.filter((f) => !inUse.has(f)))) {
+    for (const f of this._shuffle(pool.filter((f) => !inUse.has(f)))) {
       if (this.queue.length >= config.queueTarget) break;
       this.queue.push(f);
     }
-    // Small library (fewer unique files than queueTarget): allow replays so the
+    // Small pool (fewer unique files than queueTarget): allow replays so the
     // queue still fills and loops, consistent with the sequential branch.
     while (this.queue.length < config.queueTarget) {
       const before = this.queue.length;
-      for (const f of this._shuffle(this.library.files)) {
+      for (const f of this._shuffle(pool)) {
         if (this.queue.length >= config.queueTarget) break;
         this.queue.push(f);
       }
-      if (this.queue.length === before) break; // safety: no progress (can't happen with a non-empty library)
+      if (this.queue.length === before) break; // safety: no progress (can't happen with a non-empty pool)
     }
   }
 
@@ -376,6 +407,17 @@ export class StreamManager {
     this.paused = false;
     this.resumePoint = null;
     return this.startQueue(this.lastRtmpUrl, opts);
+  }
+
+  // Live-toggle the on-screen title overlay (instant — see
+  // ContinuousStream.setShowTitle). Remembered in lastOptions so a pause/resume
+  // keeps the choice, and broadcast so every connected dashboard updates.
+  setShowTitle(show) {
+    if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
+    const showTitle = this.stream.setShowTitle(show);
+    this.lastOptions = { ...(this.lastOptions || {}), showTitle };
+    this.io.emit('stream:title', { showTitle });
+    return { showTitle };
   }
 
   // Skip the currently-playing file and advance to the next one.

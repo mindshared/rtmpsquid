@@ -34,18 +34,24 @@ describe('normalizeQueue', () => {
 });
 
 describe('normalizeLibrary', () => {
-  it('always returns folder+files+durations', () => {
-    expect(normalizeLibrary(null)).toEqual({ folder: null, files: [], durations: {} });
-    expect(normalizeLibrary({ folder: 'x' })).toEqual({ folder: 'x', files: [], durations: {} });
-    expect(normalizeLibrary({ files: 'oops' })).toEqual({ folder: null, files: [], durations: {} });
+  it('always returns folder+files+durations+excluded', () => {
+    expect(normalizeLibrary(null)).toEqual({ folder: null, files: [], durations: {}, excluded: [] });
+    expect(normalizeLibrary({ folder: 'x' })).toEqual({ folder: 'x', files: [], durations: {}, excluded: [] });
+    expect(normalizeLibrary({ files: 'oops' })).toEqual({ folder: null, files: [], durations: {}, excluded: [] });
   });
-  it('preserves minMovieMB and durations when present', () => {
-    expect(normalizeLibrary({ folder: 'x', files: ['a'], minMovieMB: 5, durations: { a: 12 } })).toEqual({
+  it('preserves minMovieMB, durations and excluded when present', () => {
+    expect(
+      normalizeLibrary({ folder: 'x', files: ['a', 'b'], minMovieMB: 5, durations: { a: 12 }, excluded: ['b'] }),
+    ).toEqual({
       folder: 'x',
-      files: ['a'],
+      files: ['a', 'b'],
       durations: { a: 12 },
+      excluded: ['b'],
       minMovieMB: 5,
     });
+  });
+  it('coerces a non-array excluded to []', () => {
+    expect(normalizeLibrary({ folder: 'x', excluded: 'nope' }).excluded).toEqual([]);
   });
 });
 

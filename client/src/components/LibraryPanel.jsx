@@ -5,13 +5,16 @@ import { LIB_PAGE } from '../lib/constants';
 const EMPTY = []; // stable reference so the useMemo below isn't busted every render
 
 // Browseable library (right column). Search + pagination state is local to this
-// panel since nothing else needs it. Rows are draggable into the queue; + adds.
-export default function LibraryPanel({ library, dragRef, addAt }) {
+// panel since nothing else needs it. Rows are draggable into the queue; + adds;
+// ✕ parks a movie so the auto-queue skips it (↩ brings it back).
+export default function LibraryPanel({ library, dragRef, addAt, onExclude, onPickFile }) {
   const durations = library?.durations || {};
   const [libQuery, setLibQuery] = useState('');
   const [libPage, setLibPage] = useState(0);
 
   const files = library?.files || EMPTY;
+  const excludedSet = useMemo(() => new Set(library?.excluded || EMPTY), [library?.excluded]);
+  const excludedCount = useMemo(() => files.reduce((n, f) => n + (excludedSet.has(f) ? 1 : 0), 0), [files, excludedSet]);
 
   const libFiltered = useMemo(() => {
     const q = libQuery.trim().toLowerCase();
@@ -31,7 +34,9 @@ export default function LibraryPanel({ library, dragRef, addAt }) {
         <h2 className="queue-title" style={{ fontSize: '1.1rem' }}>
           Library
         </h2>
-        <span className="muted">{files.length} movies</span>
+        <span className="muted">
+          {files.length} movies{excludedCount ? ` · ${excludedCount} hidden` : ''}
+        </span>
       </div>
       <input
         className="search lib-search"
@@ -40,27 +45,50 @@ export default function LibraryPanel({ library, dragRef, addAt }) {
         placeholder="Search library…"
         onChange={(e) => setLibQuery(e.target.value)}
       />
-      <p className="hint">Drag a movie into the queue, or tap +</p>
+      <p className="hint">Drag a movie into the queue, or tap +. ✕ keeps a movie out of the auto-queue.</p>
+      {onPickFile && (
+        <button className="btn btn-secondary btn-small lib-addfile" onClick={onPickFile}>
+          ＋ Add a file from another folder…
+        </button>
+      )}
       <div className="lib-list scrollable">
         {libFiltered.length === 0 && <div className="empty-state">No movies match.</div>}
-        {libPageItems.map((path) => (
-          <div
-            key={path}
-            className="lib-row"
-            draggable
-            onDragStart={() => {
-              dragRef.current = { source: 'library', path };
-            }}
-            title={path}
-          >
-            <span className="lib-handle">⠿</span>
-            <span className="lib-name">{niceName(path)}</span>
-            {durations[path] ? <span className="lib-dur">{fmtDuration(durations[path])}</span> : null}
-            <button className="icon-btn" title="Add to queue" onClick={() => addAt(path, null)}>
-              ＋
-            </button>
-          </div>
-        ))}
+        {libPageItems.map((path) => {
+          const isExcluded = excludedSet.has(path);
+          return (
+            <div
+              key={path}
+              className={`lib-row${isExcluded ? ' excluded' : ''}`}
+              draggable={!isExcluded}
+              onDragStart={
+                isExcluded
+                  ? undefined
+                  : () => {
+                      dragRef.current = { source: 'library', path };
+                    }
+              }
+              title={isExcluded ? `${path} — won't auto-queue` : path}
+            >
+              <span className="lib-handle">⠿</span>
+              <span className="lib-name">{niceName(path)}</span>
+              {durations[path] ? <span className="lib-dur">{fmtDuration(durations[path])}</span> : null}
+              {isExcluded ? (
+                <button className="icon-btn" title="Auto-queue this again" onClick={() => onExclude(path, false)}>
+                  ↩
+                </button>
+              ) : (
+                <>
+                  <button className="icon-btn danger" title="Don't auto-queue this" onClick={() => onExclude(path, true)}>
+                    ✕
+                  </button>
+                  <button className="icon-btn" title="Add to queue" onClick={() => addAt(path, null)}>
+                    ＋
+                  </button>
+                </>
+              )}
+            </div>
+          );
+        })}
       </div>
       {libPageCount > 1 && (
         <div className="lib-pager">

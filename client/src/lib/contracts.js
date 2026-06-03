@@ -32,6 +32,7 @@
  * @property {string[]} files
  * @property {number} [minMovieMB]
  * @property {Object<string, number>} [durations] map of library path -> seconds
+ * @property {string[]} excluded paths parked out of the auto-queue (X button)
  */
 
 /**
@@ -57,6 +58,7 @@
  * @property {string} [videoBitrate]
  * @property {string} [audioBitrate]
  * @property {boolean} [autoRestart]
+ * @property {boolean} [showTitle] whether the on-screen movie-title overlay is on
  * @property {string|null} [lastStatus]
  * @property {FfmpegLogEntry[]} log
  */
@@ -104,6 +106,7 @@ export const normalizeLibrary = (raw) => ({
   folder: isObj(raw) ? (raw.folder ?? null) : null,
   files: arr(isObj(raw) ? raw.files : null),
   durations: isObj(raw) && isObj(raw.durations) ? raw.durations : {},
+  excluded: arr(isObj(raw) ? raw.excluded : null),
   ...(isObj(raw) && raw.minMovieMB != null ? { minMovieMB: raw.minMovieMB } : {}),
 });
 

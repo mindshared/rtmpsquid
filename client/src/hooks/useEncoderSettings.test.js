@@ -19,6 +19,7 @@ describe('useEncoderSettings.buildEncodePayload', () => {
         'fps',
         'order',
         'resolution',
+        'showTitle',
       ].sort(),
     );
   });
@@ -29,6 +30,7 @@ describe('useEncoderSettings.buildEncodePayload', () => {
     expect(typeof p.fps).toBe('number');
     expect(typeof p.audioChannels).toBe('number');
     expect(p.advanced).toBe(result.current.adv);
+    expect(p.showTitle).toBe(true); // overlay defaults on
   });
 });
 

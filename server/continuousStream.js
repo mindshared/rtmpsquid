@@ -142,6 +142,11 @@ export class ContinuousStream extends EventEmitter {
     // Advanced-mode encode overrides (or platform-safe defaults when absent).
     this.enc = normalizeEncode(options.advanced);
 
+    // Whether the bottom-left movie-name overlay is shown. The drawtext filter is
+    // always in the content filtergraph (reload=1), so this is toggled live just
+    // by writing the title — or an empty string — to titleFile. Default on.
+    this.showTitle = options.showTitle !== false;
+
     this.fifoPath = path.join(config.tmpDir, `rtmpsquid-${this.id}.ts`);
     // Holds the current movie's title for the bottom-left overlay. We write the
     // name here and point drawtext at it via textfile= so filenames with colons,
@@ -235,6 +240,19 @@ export class ContinuousStream extends EventEmitter {
     this.opt = nextOpt;
     this.enc = nextEnc;
     if (options.autoRestart !== undefined) this.autoRestart = options.autoRestart !== false;
+    if (options.showTitle !== undefined) this.setShowTitle(options.showTitle);
+  }
+
+  // Live-toggle the bottom-left title overlay. drawtext reads titleFile every
+  // frame (reload=1), so rewriting it shows/hides the label within the current
+  // track — no feeder restart, no reconnect. The choice sticks for later tracks.
+  setShowTitle(show) {
+    this.showTitle = show !== false;
+    if (this.feederKind === 'content' && this.currentFile) {
+      const name = this.showTitle ? path.basename(this.currentFile, path.extname(this.currentFile)) : '';
+      try { fs.writeFileSync(this.titleFile, name); } catch {}
+    }
+    return this.showTitle;
   }
 
   // Seconds played into the current content file right now (seek + wall-clock
@@ -521,8 +539,9 @@ export class ContinuousStream extends EventEmitter {
     let inputArgs;
 
     if (kind === 'content') {
-      // Write the movie name (sans extension) for the bottom-left overlay.
-      try { fs.writeFileSync(this.titleFile, path.basename(file, path.extname(file))); } catch {}
+      // Write the movie name (sans extension) for the bottom-left overlay — or an
+      // empty string when the overlay is toggled off (drawtext then draws nothing).
+      try { fs.writeFileSync(this.titleFile, this.showTitle ? path.basename(file, path.extname(file)) : ''); } catch {}
       vf = this._videoFilter(true);
       inputArgs = [];
       // Seek: an explicit resume offset wins; otherwise the one-time start
@@ -719,6 +738,7 @@ export class ContinuousStream extends EventEmitter {
       videoBitrate: this.opt.videoBitrate,
       audioBitrate: this.opt.audioBitrate,
       autoRestart: this.autoRestart,
+      showTitle: this.showTitle,
       lastStatus: this.lastStatus,
       log: this.log.slice(-80),
     };

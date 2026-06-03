@@ -31,6 +31,7 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
   const [query, setQuery] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
+  const [showFilePicker, setShowFilePicker] = useState(false);
   const [busy, setBusy] = useState(false);
   const [folderPath, setFolderPath] = useState('');
   const [overIndex, setOverIndex] = useState(null);
@@ -81,9 +82,29 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
       }
     });
   };
+  // Park / un-park a library file so the auto-queue skips (or resumes) it. This
+  // returns the library (not the queue), so it bypasses `call`'s setQueue path;
+  // the server broadcasts the resulting queue + library over the socket.
+  const setExcluded = async (path, excluded) => {
+    setBusy(true);
+    try {
+      await api.post('/api/library/exclude', { filePath: path, excluded });
+      refetchLibrary();
+    } catch (e) {
+      notify?.(`Library: ${e.response?.data?.error || e.message}`, 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
   const reshuffle = () => call(() => api.post('/api/queue/reshuffle'), 'Shuffle');
   const removeAt = (index) => call(() => api.delete(`/api/queue/${index}`), 'Remove');
   const addAt = (path, index) => call(() => api.post('/api/queue/add', { filePath: path, index }), 'Add');
+  // Cherry-pick a single file (possibly outside the scanned library) into the
+  // queue. Plays once where it lands and isn't auto-refilled back in afterwards.
+  const addFile = (path) =>
+    addAt(path, null).then((d) => {
+      if (d) notify?.(`Added ${basename(path)} to the queue`);
+    });
   const reorder = async (from, to) => {
     if (from == null || to == null || from === to) return;
     const prev = queue; // snapshot for rollback if the request fails
@@ -117,6 +138,13 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
   };
   const stop = () => call(() => api.post('/api/queue/stop'), 'Stop');
   const skipNext = () => call(() => api.post('/api/queue/next'), 'Next');
+  // On-the-fly on-screen-title toggle. Hits the live endpoint (instant, no
+  // reconnect) and remembers the choice as the default for the next Go Live.
+  const toggleTitle = () => {
+    const next = !(streamStatus?.showTitle !== false); // invert the current effective state
+    settings.setShowTitle(next);
+    return call(() => api.post('/api/queue/title', { show: next }), 'Title');
+  };
   const pause = () =>
     call(() => api.post('/api/queue/pause'), 'Pause').then((d) => {
       if (d) notify?.('Paused — you can change settings, then Resume');
@@ -180,9 +208,11 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
                   status={streamStatus}
                   currentFile={queue.currentFile}
                   nextTrack={nextTrack}
+                  showTitle={streamStatus?.showTitle !== false}
                   onStop={stop}
                   onNext={skipNext}
                   onPause={pause}
+                  onToggleTitle={toggleTitle}
                 />
               </ErrorBoundary>
             )}
@@ -220,7 +250,13 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
           </main>
 
           <ErrorBoundary label="Library" compact>
-            <LibraryPanel library={library} dragRef={dragRef} addAt={addAt} />
+            <LibraryPanel
+              library={library}
+              dragRef={dragRef}
+              addAt={addAt}
+              onExclude={setExcluded}
+              onPickFile={() => setShowFilePicker(true)}
+            />
           </ErrorBoundary>
         </div>
       )}
@@ -251,6 +287,8 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
           onClose={() => setShowBrowser(false)}
         />
       )}
+
+      {showFilePicker && <FolderBrowser onAddFile={addFile} onClose={() => setShowFilePicker(false)} />}
     </div>
   );
 }

@@ -2,7 +2,7 @@ import { niceName, elapsed, liveRate } from '../lib/format';
 
 // The live "now playing" hero: status badge, current title, target vs measured
 // bitrate, next track, and the transport controls (Next / Pause / Stop).
-export default function NowPlaying({ status, currentFile, nextTrack, onStop, onNext, onPause }) {
+export default function NowPlaying({ status, currentFile, nextTrack, showTitle, onStop, onNext, onPause, onToggleTitle }) {
   const s = status?.status || 'streaming';
   const standby = s === 'standby';
   const reconnecting = s === 'reconnecting';
@@ -61,6 +61,15 @@ export default function NowPlaying({ status, currentFile, nextTrack, onStop, onN
         >
           ⏸ Pause
         </button>
+        {onToggleTitle && (
+          <button
+            className={`btn btn-secondary btn-small${showTitle ? '' : ' is-off'}`}
+            onClick={onToggleTitle}
+            title="Show or hide the movie title overlaid on the video (takes effect instantly)"
+          >
+            🏷 Title: {showTitle ? 'On' : 'Off'}
+          </button>
+        )}
         <button className="btn btn-danger btn-small" onClick={onStop}>
           Stop
         </button>

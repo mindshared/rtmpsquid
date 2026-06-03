@@ -277,6 +277,15 @@ export default function SettingsDrawer({
               Auto-restart if the stream fails <span className="muted">(resumes where it left off)</span>
             </span>
           </label>
+          <label
+            className="check-row"
+            title="Burn the current movie's name into the bottom-left of the video. You can also flip this live from the Now Playing panel."
+          >
+            <input type="checkbox" checked={s.showTitle} onChange={(e) => s.setShowTitle(e.target.checked)} />
+            <span>
+              Show movie title on screen <span className="muted">(bottom-left overlay)</span>
+            </span>
+          </label>
           <button className="btn btn-secondary btn-small" onClick={s.resetAdv}>
             Reset encoder to platform defaults
           </button>

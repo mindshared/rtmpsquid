@@ -70,18 +70,39 @@ app.get('/api/stats', (req, res) => res.json(getStats()));
 // ---- folder browsing (for the library picker; confined to mediaRoot) ----
 app.post('/api/browse-directory', h((req, res) => {
   const dir = resolveWithinRoot(req.body.directory || config.mediaRoot);
-  const directories = fs.readdirSync(dir, { withFileTypes: true })
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const directories = entries
     .filter((e) => e.isDirectory() && !e.isSymbolicLink() && !e.name.startsWith('.'))
     .map((e) => ({ name: e.name, path: path.join(dir, e.name) }))
     .sort((a, b) => a.name.localeCompare(b.name));
+  // Video files in this folder too, so a single file can be cherry-picked into
+  // the queue even when it lives outside the scanned library folder.
+  const videoExts = new Set(config.videoExtensions);
+  const files = entries
+    .filter((e) => e.isFile() && !e.isSymbolicLink() && !e.name.startsWith('.') &&
+      videoExts.has(path.extname(e.name).toLowerCase()))
+    .map((e) => {
+      const full = path.join(dir, e.name);
+      let size = null;
+      try { size = fs.statSync(full).size; } catch { /* unreadable — size stays null */ }
+      return { name: e.name, path: full, size };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   const realRoot = fs.realpathSync(config.mediaRoot);
   const parent = fs.realpathSync(dir) !== realRoot ? path.dirname(dir) : null;
-  res.json({ success: true, currentPath: dir, parent, directories });
+  res.json({ success: true, currentPath: dir, parent, directories, files });
 }));
 
 // ---- the one auto-queue ----
 app.get('/api/queue', (req, res) => res.json(streamManager.getQueue()));
 app.get('/api/library', (req, res) => res.json(streamManager.getLibrary()));
+
+// Park / un-park a library file so the auto-queue skips (or resumes) it.
+app.post('/api/library/exclude', h((req, res) => {
+  const file = resolveWithinRoot(req.body.filePath);
+  const excluded = req.body.excluded !== false; // default to parking
+  res.json(streamManager.setExcluded(file, excluded));
+}));
 
 app.post('/api/queue/library', h(async (req, res) => {
   const folder = resolveWithinRoot(req.body.folderPath);
@@ -113,6 +134,9 @@ app.post('/api/queue/start', h(async (req, res) => {
 app.post('/api/queue/stop', h(async (req, res) => { await streamManager.stopQueue(); res.json({ success: true }); }));
 
 app.post('/api/queue/next', h(async (req, res) => { res.json(streamManager.skipCurrent()); }));
+
+// Live on/off for the bottom-left movie-title overlay (instant, no reconnect).
+app.post('/api/queue/title', h((req, res) => res.json(streamManager.setShowTitle(req.body.show))));
 
 // Pause goes offline but remembers the spot; resume reconnects and picks it up.
 app.post('/api/queue/pause', h(async (req, res) => { res.json(await streamManager.pauseQueue()); }));

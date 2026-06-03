@@ -83,6 +83,7 @@ function App() {
       ),
     );
     s.on('stream:standby', () => setStreamStatus((cur) => (cur ? { ...cur, status: 'standby' } : cur)));
+    s.on('stream:title', (d) => setStreamStatus((cur) => (cur ? { ...cur, showTitle: d.showTitle } : cur)));
     s.on('stream:reconnecting', (d) => {
       notify(`Reconnecting (attempt ${d.attempt})…`, 'error');
       setStreamStatus((cur) => (cur ? { ...cur, status: 'reconnecting' } : cur));

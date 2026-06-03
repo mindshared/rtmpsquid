@@ -19,6 +19,7 @@ export function useEncoderSettings() {
   const [order, _setOrder] = useState(ls('rs_order', 'shuffle'));
   const [minSizeMB, _setMinSizeMB] = useState(ls('rs_minmb', '5'));
   const [autoRestart, _setAutoRestart] = useState(ls('rs_autorestart', '1') === '1');
+  const [showTitle, _setShowTitle] = useState(ls('rs_title', '1') === '1');
 
   // Single authoritative encoder block. One-shot migration seeds adv.rateControl
   // from the legacy rs_rc key written by an earlier two-mode build.
@@ -56,6 +57,10 @@ export function useEncoderSettings() {
     persist('rs_autorestart', v ? '1' : '0');
     _setAutoRestart(v);
   };
+  const setShowTitle = (v) => {
+    persist('rs_title', v ? '1' : '0');
+    _setShowTitle(v);
+  };
 
   const setAdvField = (k, v) => {
     const next = { ...adv, [k]: v };
@@ -77,6 +82,7 @@ export function useEncoderSettings() {
     order,
     fit: videoFit,
     autoRestart,
+    showTitle,
     advanced: adv,
   });
 
@@ -103,6 +109,8 @@ export function useEncoderSettings() {
     setMinSizeMB,
     autoRestart,
     setAutoRestart,
+    showTitle,
+    setShowTitle,
     adv,
     setAdvField,
     resetAdv,
