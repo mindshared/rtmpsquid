@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { config } from './config.js';
+import { subtitleFilterFragment, subtitlesFilterAvailable } from './subtitles.js';
 
 // Locate a usable font for the standby slate's text (optional — we fall back
 // to a plain colour card if none is found).
@@ -118,12 +119,16 @@ function normalizeEncode(adv = {}) {
  * feeders, so the connection to the platform is never dropped.
  */
 export class ContinuousStream extends EventEmitter {
-  constructor({ id, rtmpUrl, options = {}, nextFile, playlistId = null }) {
+  constructor({ id, rtmpUrl, options = {}, nextFile, subtitleFor = null, playlistId = null }) {
     super();
     this.id = id || crypto.randomUUID();
     this.rtmpUrl = rtmpUrl;
     this.playlistId = playlistId;
     this.nextFile = nextFile; // () => string | null  (next file path, or null for standby)
+    // () => { safePath, fontSize } | null for a given content file — resolves the
+    // per-title burned-in subtitle at feed time, so a choice made mid-stream takes
+    // effect when that title next starts (no reconnect).
+    this.subtitleFor = subtitleFor;
 
     const [w, h] = (options.resolution || '1920x1080').split('x').map(n => parseInt(n, 10));
     this.opt = {
@@ -269,7 +274,7 @@ export class ContinuousStream extends EventEmitter {
 
   // ---- ffmpeg argument builders -------------------------------------------
 
-  _videoFilter(overlayTitle = false) {
+  _videoFilter(overlayTitle = false, subFragment = null) {
     const { width: W, height: H, fps, fit } = this.opt;
     let scale;
     if (fit === 'stretch') {
@@ -283,6 +288,9 @@ export class ContinuousStream extends EventEmitter {
       scale = `scale=${W}:${H}:force_original_aspect_ratio=decrease,pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:black`;
     }
     let vf = `${scale},setsar=1,fps=${fps},format=yuv420p`;
+    // Burned-in subtitles for this title (after scaling, so they render at output
+    // resolution). subFragment is prebuilt by the caller from the resolved temp .srt.
+    if (subFragment) vf += `,${subFragment}`;
     // Small, unobtrusive movie-name label in the bottom-left corner. Reads the
     // title from this.titleFile (written per-file in _spawnFeeder) so no escaping
     // is needed; skipped if no usable font was found.
@@ -542,7 +550,20 @@ export class ContinuousStream extends EventEmitter {
       // Write the movie name (sans extension) for the bottom-left overlay — or an
       // empty string when the overlay is toggled off (drawtext then draws nothing).
       try { fs.writeFileSync(this.titleFile, this.showTitle ? path.basename(file, path.extname(file)) : ''); } catch {}
-      vf = this._videoFilter(true);
+      // Resolve this title's chosen subtitle (if any) into a burn-in fragment.
+      let subFragment = null;
+      try {
+        const sub = this.subtitleFor ? this.subtitleFor(file) : null;
+        if (sub && sub.safePath && fs.existsSync(sub.safePath)) {
+          if (subtitlesFilterAvailable()) {
+            subFragment = subtitleFilterFragment(sub.safePath, { fontSize: sub.fontSize });
+          } else {
+            // libass-less ffmpeg: don't kill the feeder — just note why subs didn't show.
+            this._pushLog('feeder', 'log', 'subtitle requested but this ffmpeg lacks the libass `subtitles` filter — skipping burn-in');
+          }
+        }
+      } catch { /* missing/unreadable subtitle just means no overlay */ }
+      vf = this._videoFilter(true, subFragment);
       inputArgs = [];
       // Seek: an explicit resume offset wins; otherwise the one-time start
       // offset applies to the very first file only.

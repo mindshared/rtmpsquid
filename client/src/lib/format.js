@@ -4,6 +4,14 @@
 
 export const basename = (p) => (p ? (String(p).split(/[/\\]/).pop() ?? '') : '');
 
+// Parent directory of a path ('' if there's no separator). Mirrors basename's
+// tolerance of both / and \ separators so it works on server-supplied paths.
+export const dirname = (p) => {
+  const s = String(p || '');
+  const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf('\\'));
+  return i > 0 ? s.slice(0, i) : '';
+};
+
 export const niceName = (p) =>
   basename(p)
     .replace(/\.[^.]+$/, '')

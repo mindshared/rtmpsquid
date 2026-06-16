@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { basename } from '../lib/format';
+import { basename, dirname } from '../lib/format';
 import { useLibrary } from '../hooks/useLibrary';
 import { useEncoderSettings } from '../hooks/useEncoderSettings';
 import { useFfmpegLog } from '../hooks/useFfmpegLog';
@@ -14,6 +14,7 @@ import LibraryPanel from './LibraryPanel';
 import SettingsDrawer from './SettingsDrawer';
 import FfmpegLogPanel from './FfmpegLogPanel';
 import FolderBrowser from './FolderBrowser';
+import SubtitlePicker from './SubtitlePicker';
 
 // Stable empty array so `queue?.files || EMPTY` keeps a constant reference when
 // there's no queue — otherwise a fresh [] each render busts the useMemo below.
@@ -32,6 +33,8 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
   const [showFilePicker, setShowFilePicker] = useState(false);
+  const [subtitleFor, setSubtitleFor] = useState(null); // queue path whose subtitles we're editing
+  const [subtitleBrowse, setSubtitleBrowse] = useState(false); // browsing the filesystem for a .srt
   const [busy, setBusy] = useState(false);
   const [folderPath, setFolderPath] = useState('');
   const [overIndex, setOverIndex] = useState(null);
@@ -96,6 +99,10 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
       setBusy(false);
     }
   };
+  // Set/clear the burned-in subtitle for one title (choice=null clears). A bare
+  // fontSize change passes choice=undefined to leave the current pick alone.
+  const setSubtitle = (filePath, choice, fontSize) =>
+    call(() => api.post('/api/queue/subtitle', { filePath, choice, fontSize }), 'Subtitle');
   const reshuffle = () => call(() => api.post('/api/queue/reshuffle'), 'Shuffle');
   const removeAt = (index) => call(() => api.delete(`/api/queue/${index}`), 'Remove');
   const addAt = (path, index) => call(() => api.post('/api/queue/add', { filePath: path, index }), 'Add');
@@ -243,6 +250,8 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
                 dropAt={dropAt}
                 removeAt={removeAt}
                 durations={queue?.durations || {}}
+                subtitles={queue?.subtitles || {}}
+                onPickSubtitle={(path) => setSubtitleFor(path)}
                 totalSeconds={queue?.totalSeconds || 0}
                 totalKnown={queue?.totalKnown !== false}
               />
@@ -289,6 +298,25 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
       )}
 
       {showFilePicker && <FolderBrowser onAddFile={addFile} onClose={() => setShowFilePicker(false)} />}
+
+      {subtitleFor && !subtitleBrowse && (
+        <SubtitlePicker
+          filePath={subtitleFor}
+          subtitles={queue?.subtitles || {}}
+          fontSize={queue?.subtitleFontSize || 20}
+          onApply={(choice, fontSize) => setSubtitle(subtitleFor, choice, fontSize)}
+          onBrowse={() => setSubtitleBrowse(true)}
+          onClose={() => setSubtitleFor(null)}
+        />
+      )}
+
+      {subtitleFor && subtitleBrowse && (
+        <FolderBrowser
+          startPath={dirname(subtitleFor)}
+          onPickSubtitle={(subPath, name) => setSubtitle(subtitleFor, { kind: 'file', path: subPath, label: name })}
+          onClose={() => setSubtitleBrowse(false)}
+        />
+      )}
     </div>
   );
 }

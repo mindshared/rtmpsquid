@@ -10,6 +10,9 @@
     "client": "cd client && npm run dev",
     "build": "cd client && npm run build",
     "start": "node server/index.js",
+    "test": "node --test server/*.test.js",
+    "test:client": "cd client && npm test",
+    "test:subtitles": "node scripts/test-subtitles.mjs",
     "setup": "bash setup.sh"
   },
   "keywords": [

@@ -113,6 +113,9 @@ case "$ENC" in *libx264*) ok "FFmpeg ${VER:-?} with libx264" ;;
   *) die "Your FFmpeg lacks libx264 (required to stream H.264). Install a full build." ;; esac
 case "$DEC" in *av1*|*AV1*) ok "AV1 decoding available" ;;
   *) warn "No AV1 decoder — AV1 source files won't play (H.264/others still fine)" ;; esac
+FILT="$(ffmpeg -hide_banner -filters 2>/dev/null || true)"
+case "$FILT" in *" subtitles "*) ok "Subtitle burn-in available (libass)" ;;
+  *) warn "No libass 'subtitles' filter — per-title subtitles won't burn in (everything else works). Install a full FFmpeg build for subtitle support." ;; esac
 
 # --- dependencies + build -------------------------------------------------
 step "Installing dependencies"

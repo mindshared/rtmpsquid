@@ -5,6 +5,7 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import { ContinuousStream } from './continuousStream.js';
 import { config } from './config.js';
+import { findSidecarSubtitles, resolveSubtitleToTemp, removeTempSubtitle, clampFontSize, subtitlesFilterAvailable } from './subtitles.js';
 
 /**
  * One auto-filling queue. It draws random movies from a library folder, keeps
@@ -29,6 +30,12 @@ export class StreamManager {
     this._seqIndex = 0;                            // cursor into the sorted library for sequential play
     this.minMovieMB = config.minMovieBytes / (1024 * 1024); // smallest file allowed in the library
     this._durations = new Map(); // absolute path -> { seconds: number|null, sig: 'mtimeMs:size' } (ffprobe cache)
+
+    // Per-title burned-in subtitles: absolute video path -> { kind:'file', path,
+    // label, safePath }. Keyed by path so the choice survives reorder/refill and a
+    // file queued twice shares it. safePath is a hashed temp copy fed to ffmpeg.
+    this.subtitles = new Map();
+    this.subtitleFontSize = clampFontSize(process.env.SUBTITLE_FONT_SIZE, 20); // global on-screen size
 
     // Auto-load the default library on boot so it "just plays" out of the box.
     if (config.libraryDir) this.setLibrary(config.libraryDir).catch((e) => console.error('library load:', e.message));
@@ -67,6 +74,8 @@ export class StreamManager {
     // Build a fresh queue from the new library (reset the sequential cursor too).
     this.queue = [];
     this._seqIndex = 0;
+    this._clearAllSubtitles(); // picks referenced the old library's files
+
     this._refill();
     this.io.emit('library:updated', this.getLibrary());
     this.io.emit('queue:updated', this.getQueue());
@@ -256,6 +265,8 @@ export class StreamManager {
       durations, // { absolutePath: seconds } for the queued files
       totalSeconds: Math.round(totalSeconds), // sum of known queued durations
       totalKnown, // false while some queued durations are still being probed
+      subtitles: this._subtitleSummary(), // { absolutePath: { label } } for titles with burned-in subs
+      subtitleFontSize: this.subtitleFontSize, // global on-screen subtitle size
     };
   }
 
@@ -292,6 +303,77 @@ export class StreamManager {
     this.queue.splice(to, 0, m);
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
+  }
+
+  // ---- per-title subtitles -------------------------------------------------
+
+  // Resolver handed to ContinuousStream: returns the burn-in info for a content
+  // file at feed time, or null. Reads the live map + global size, so a choice
+  // made mid-stream applies when that title next starts.
+  _subtitleForFeeder(file) {
+    const choice = this.subtitles.get(file);
+    if (!choice || !choice.safePath) return null;
+    return { safePath: choice.safePath, fontSize: this.subtitleFontSize };
+  }
+
+  // What the picker shows for a file: the current selection, the global font size,
+  // and the auto-detected sidecar options in/near its folder.
+  getSubtitleOptions(file) {
+    const cur = this.subtitles.get(file) || null;
+    return {
+      file,
+      fontSize: this.subtitleFontSize,
+      current: cur ? { kind: cur.kind, path: cur.path, label: cur.label } : null,
+      options: findSidecarSubtitles(file),
+      supported: subtitlesFilterAvailable(), // false ⇒ this ffmpeg can't burn subs in
+    };
+  }
+
+  // Set (choice = { kind:'file', path, label }) or clear (choice = null) the
+  // burned-in subtitle for one title, and optionally update the global font size.
+  // `changeChoice=false` leaves the current pick untouched (a font-size-only
+  // update). The choice is copied to a safe temp path immediately so feed time
+  // stays cheap and the filtergraph never has to escape an awkward path. Applies
+  // when the title next starts (we don't interrupt a track that's already playing).
+  setSubtitle(file, choice, fontSize, changeChoice = true) {
+    if (fontSize !== undefined && fontSize !== null && fontSize !== '') {
+      this.subtitleFontSize = clampFontSize(fontSize, this.subtitleFontSize);
+    }
+    if (changeChoice) {
+      const prev = this.subtitles.get(file);
+      if (!choice) {
+        this.subtitles.delete(file);
+      } else if (choice.kind === 'file' && choice.path) {
+        let safePath;
+        try {
+          safePath = resolveSubtitleToTemp(choice.path);
+        } catch (e) {
+          throw Object.assign(new Error(`Subtitle not readable: ${e.message}`), { status: 400 });
+        }
+        this.subtitles.set(file, { kind: 'file', path: choice.path, label: choice.label || 'Subtitles', safePath });
+      }
+      // Drop the previous temp copy if it's no longer referenced by this title.
+      if (prev && prev.safePath && prev.safePath !== this.subtitles.get(file)?.safePath) {
+        removeTempSubtitle(prev.safePath);
+      }
+    }
+    this.io.emit('queue:updated', this.getQueue());
+    return this.getQueue();
+  }
+
+  // Forget every per-title subtitle and clean up its temp copies (called when the
+  // library is replaced, so stale picks for gone files don't linger).
+  _clearAllSubtitles() {
+    for (const choice of this.subtitles.values()) removeTempSubtitle(choice.safePath);
+    this.subtitles.clear();
+  }
+
+  // Light map of the active picks for the client ({ path: { label } }), so the
+  // queue can flag which titles carry subtitles without shipping temp paths.
+  _subtitleSummary() {
+    const out = {};
+    for (const [file, c] of this.subtitles) out[file] = { label: c.label };
+    return out;
   }
 
   // ---- streaming -----------------------------------------------------------
@@ -350,7 +432,7 @@ export class StreamManager {
       return this.currentFile;
     };
 
-    const cs = new ContinuousStream({ id: streamId, rtmpUrl, options, nextFile });
+    const cs = new ContinuousStream({ id: streamId, rtmpUrl, options, nextFile, subtitleFor: (f) => this._subtitleForFeeder(f) });
     this.rtmpUrl = rtmpUrl;
     this._attachEvents(cs);
     this.stream = cs;
@@ -450,5 +532,6 @@ export class StreamManager {
 
   async stopAllStreams() {
     if (this.stream) { await this.stream.stop().catch(() => {}); this.stream = null; }
+    this._clearAllSubtitles();
   }
 }

@@ -1207,9 +1207,115 @@ code {
   opacity: 0;
   user-select: none;
   font-size: 1rem;
+  /* Claim touch gestures on the handle so a drag-to-reorder isn't stolen by the
+     list's scroll. The rest of the row still scrolls normally. */
+  touch-action: none;
+  padding: 0 0.2rem;
 }
 .track-handle:active {
   cursor: grabbing;
+}
+.track.dragging .track-handle {
+  cursor: grabbing;
+}
+
+/* Touch devices have no hover, so reveal the handle and row actions permanently
+   — otherwise the reorder grip and CC/remove buttons would be invisible. */
+@media (hover: none) {
+  .track-handle,
+  .track-actions {
+    opacity: 1;
+  }
+}
+
+/* Per-title subtitle (CC) control + an inline badge on titles that carry subs. */
+.cc-btn {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+.cc-btn.active {
+  color: #00ff00;
+}
+.track-cc-badge {
+  flex: none;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #04220a;
+  background: #00c020;
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+
+/* Subtitle picker modal */
+.sub-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  max-height: 40vh;
+}
+.sub-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  background: #141414;
+  border: 1px solid #262626;
+  border-radius: 6px;
+  padding: 0.55rem 0.7rem;
+  color: #ddd;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.sub-row:hover {
+  background: #1c1c1c;
+}
+.sub-row.active {
+  border-color: #00ff00;
+  background: #04220a;
+}
+.sub-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sub-src {
+  flex: none;
+  font-size: 0.72rem;
+  max-width: 45%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sub-check {
+  flex: none;
+  color: #00ff00;
+  font-weight: 700;
+}
+.sub-size {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+.sub-size label {
+  flex: none;
+  color: #aaa;
+  font-size: 0.85rem;
+}
+.sub-size input[type='range'] {
+  flex: 1;
+}
+.sub-size-val {
+  flex: none;
+  width: 2ch;
+  text-align: right;
+  color: #ddd;
+  font-variant-numeric: tabular-nums;
 }
 .track-num {
   width: 22px;

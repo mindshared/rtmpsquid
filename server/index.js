@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { config, ensureDirs } from './config.js';
 import { requireAuth, socketAuth, resolveWithinRoot, assertSafeStreamUrl } from './security.js';
 import { StreamManager } from './streamManager.js';
+import { SUBTITLE_EXTENSIONS } from './subtitles.js';
 import { startStats, getStats } from './stats.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -88,9 +89,17 @@ app.post('/api/browse-directory', h((req, res) => {
       return { name: e.name, path: full, size };
     })
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+  // Subtitle files in this folder too, so the subtitle picker can browse to a
+  // .srt/.ass/.vtt that doesn't sit right beside its movie.
+  const subExts = new Set(SUBTITLE_EXTENSIONS);
+  const subtitleFiles = entries
+    .filter((e) => e.isFile() && !e.isSymbolicLink() && !e.name.startsWith('.') &&
+      subExts.has(path.extname(e.name).toLowerCase()))
+    .map((e) => ({ name: e.name, path: path.join(dir, e.name) }))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
   const realRoot = fs.realpathSync(config.mediaRoot);
   const parent = fs.realpathSync(dir) !== realRoot ? path.dirname(dir) : null;
-  res.json({ success: true, currentPath: dir, parent, directories, files });
+  res.json({ success: true, currentPath: dir, parent, directories, files, subtitleFiles });
 }));
 
 // ---- the one auto-queue ----
@@ -122,6 +131,30 @@ app.post('/api/queue/add', h((req, res) => {
 app.delete('/api/queue/:index', (req, res) => res.json(streamManager.removeFromQueue(parseInt(req.params.index, 10))));
 
 app.post('/api/queue/reorder', (req, res) => res.json(streamManager.reorderQueue(req.body.fromIndex, req.body.toIndex)));
+
+// Per-title subtitles. GET lists the auto-detected options for a file; POST sets
+// (or clears) the burned-in subtitle and optionally the global font size.
+app.get('/api/subtitles', h((req, res) => {
+  const file = resolveWithinRoot(req.query.filePath);
+  res.json(streamManager.getSubtitleOptions(file));
+}));
+
+app.post('/api/queue/subtitle', h((req, res) => {
+  const file = resolveWithinRoot(req.body.filePath);
+  // A missing `choice` key means "font size only — leave the pick alone"; an
+  // explicit null clears it; an object sets it.
+  const changeChoice = Object.prototype.hasOwnProperty.call(req.body, 'choice');
+  let choice = null;
+  const raw = req.body.choice;
+  if (raw && raw.kind === 'file' && raw.path) {
+    choice = {
+      kind: 'file',
+      path: resolveWithinRoot(raw.path), // confine the subtitle to the media root too
+      label: typeof raw.label === 'string' && raw.label.trim() ? raw.label.trim().slice(0, 80) : 'Subtitles',
+    };
+  }
+  res.json(streamManager.setSubtitle(file, choice, req.body.fontSize, changeChoice));
+}));
 
 app.post('/api/queue/start', h(async (req, res) => {
   const { rtmpUrl, streamKey, ...opts } = req.body;
