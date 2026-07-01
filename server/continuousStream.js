@@ -5,6 +5,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { config } from './config.js';
 import { subtitleFilterFragment, subtitlesFilterAvailable } from './subtitles.js';
+import { cleanTitle } from './title.js';
 
 // Locate a usable font for the standby slate's text (optional — we fall back
 // to a plain colour card if none is found).
@@ -403,6 +404,11 @@ export class ContinuousStream extends EventEmitter {
           this.progress = {
             timeMs: outTimeUs / 1000,
             outTime: progBuf.out_time || null,
+            // Position WITHIN the current movie (seconds): the file's start
+            // offset plus realtime elapsed. null on the standby slate. This is
+            // what the dashboard shows as "where we are", distinct from timeMs
+            // (which is total time streamed across all files this session).
+            filePositionSec: this.feederKind === 'content' ? this._currentContentOffset() : null,
             fps: parseFloat(progBuf.fps || '0'),
             bitrate: progBuf.bitrate || null,
             instBitrate, // recent-window rate (what the UI shows as "live")
@@ -560,7 +566,7 @@ export class ContinuousStream extends EventEmitter {
     if (kind === 'content') {
       // Write the movie name (sans extension) for the bottom-left overlay — or an
       // empty string when the overlay is toggled off (drawtext then draws nothing).
-      try { fs.writeFileSync(this.titleFile, this.showTitle ? path.basename(file, path.extname(file)) : ''); } catch {}
+      try { fs.writeFileSync(this.titleFile, this.showTitle ? cleanTitle(file) : ''); } catch {}
       // Resolve this title's chosen subtitle (if any) into a burn-in fragment.
       let subFragment = null;
       try {
