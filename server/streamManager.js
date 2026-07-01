@@ -502,6 +502,18 @@ export class StreamManager {
       if (prev && prev.safePath && prev.safePath !== this.subtitles.get(file)?.safePath) {
         removeTempSubtitle(prev.safePath);
       }
+      // If we just changed the subtitle for the movie that's playing RIGHT NOW,
+      // apply it live: re-feed the current file at its current position so the
+      // new burn-in (or its removal) takes effect immediately. Burned-in subs
+      // can't be toggled without re-encoding, so this is a brief (~1-2s) blip,
+      // no RTMP reconnect — same mechanism as a live seek.
+      if (this.stream && file && file === this.currentFile) {
+        try {
+          const at = Math.max(0, Math.floor(this.stream.getResumeState().offset || 0));
+          this.stream.seekCurrent(at);
+          this._liveOffset = at;
+        } catch { /* slate / not seekable — the pick still applies next start */ }
+      }
     }
     this._persist();
     this.io.emit('queue:updated', this.getQueue());

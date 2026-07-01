@@ -120,6 +120,29 @@ test('restore applies saved settings and queue (existing files only), no stream'
   assert.equal(q.streaming, false); // wasStreaming false ⇒ no auto-resume
 });
 
+test('setSubtitle for the now-playing movie re-feeds it live at its current offset', () => {
+  const srt = `${dir}/live.srt`;
+  fs.writeFileSync(srt, '1\n00:00:01,000 --> 00:00:02,000\nhi\n');
+  const m = mgr();
+  const video = '/movies/Now Playing.mkv';
+  m.currentFile = video;
+  let seekedTo = null;
+  m.stream = { getResumeState: () => ({ file: video, offset: 137.6 }), seekCurrent: (o) => { seekedTo = o; return true; } };
+  m.setSubtitle(video, { kind: 'file', path: srt, label: 'English' });
+  assert.equal(seekedTo, 137); // floored current position — burn-in applied live
+});
+
+test('setSubtitle for a NON-playing movie does not re-feed the stream', () => {
+  const srt = `${dir}/other.srt`;
+  fs.writeFileSync(srt, '1\n00:00:01,000 --> 00:00:02,000\nhi\n');
+  const m = mgr();
+  m.currentFile = '/movies/Playing.mkv';
+  let seeked = false;
+  m.stream = { getResumeState: () => ({ offset: 5 }), seekCurrent: () => { seeked = true; return true; } };
+  m.setSubtitle('/movies/Queued.mkv', { kind: 'file', path: srt, label: 'English' });
+  assert.equal(seeked, false); // a queued title's sub applies when it next starts
+});
+
 test('cleanup', () => {
   fs.rmSync(dir, { recursive: true, force: true });
   fs.rmSync(dataDir, { recursive: true, force: true });

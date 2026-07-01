@@ -46,6 +46,7 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
   const files = queue?.files || EMPTY;
   const currentIndex = streaming && queue?.currentFile ? files.findIndex((f) => basename(f) === queue.currentFile) : -1;
   const nextTrack = currentIndex >= 0 && currentIndex < files.length - 1 ? files[currentIndex + 1] : null;
+  const playingPath = currentIndex >= 0 ? files[currentIndex] : null; // absolute path of the now-playing movie
   const searching = query.trim().length > 0;
   const hasLibrary = !!(queue && queue.libraryCount > 0);
 
@@ -253,6 +254,9 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
                   onPause={pause}
                   onSeek={seekTo}
                   onToggleTitle={toggleTitle}
+                  subtitlePath={playingPath}
+                  hasSubtitle={!!(playingPath && queue?.subtitles?.[playingPath])}
+                  onPickSubtitle={playingPath ? () => setSubtitleFor(playingPath) : null}
                 />
               </ErrorBoundary>
             )}
@@ -337,6 +341,7 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
           filePath={subtitleFor}
           subtitles={queue?.subtitles || {}}
           fontSize={queue?.subtitleFontSize || 20}
+          live={streaming && subtitleFor === playingPath}
           onApply={(choice, fontSize) => setSubtitle(subtitleFor, choice, fontSize)}
           onBrowse={() => setSubtitleBrowse(true)}
           onClose={() => setSubtitleFor(null)}

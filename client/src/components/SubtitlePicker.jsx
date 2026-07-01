@@ -6,7 +6,7 @@ import { niceName } from '../lib/format';
 // for `filePath`, lets the user pick one / turn them off / browse for a file
 // elsewhere, and tune the (global) on-screen font size. Selecting commits
 // immediately via onApply; the burn-in takes effect when the title next starts.
-export default function SubtitlePicker({ filePath, subtitles, fontSize, onApply, onBrowse, onClose }) {
+export default function SubtitlePicker({ filePath, subtitles, fontSize, live = false, onApply, onBrowse, onClose }) {
   const [options, setOptions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [supported, setSupported] = useState(true);
@@ -56,7 +56,11 @@ export default function SubtitlePicker({ filePath, subtitles, fontSize, onApply,
         <p className="muted" style={{ marginTop: 0 }}>
           {niceName(filePath)}
         </p>
-        <p className="hint">Burned into the stream — applies when this title next starts.</p>
+        <p className="hint">
+          {live
+            ? 'Burned into the stream — applies now (brief re-buffer, no reconnect).'
+            : 'Burned into the stream — applies when this title next starts.'}
+        </p>
         {!supported && (
           <p className="hint" style={{ color: '#e0a030' }}>
             ⚠ This server&apos;s ffmpeg was built without libass, so subtitles can&apos;t be burned in. Your pick is
