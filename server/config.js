@@ -53,6 +53,11 @@ export const config = {
   // The library the auto-queue draws random movies from (defaults to the media root).
   libraryDir: path.resolve(process.env.LIBRARY_DIR || mediaRoot),
 
+  // Where persisted settings/queue/stream state live so they survive a restart.
+  // Defaults to a `data/` folder beside the repo; override with DATA_DIR (mount
+  // this as a volume when running in Docker so state outlives the container).
+  dataDir: path.resolve(process.env.DATA_DIR || path.join(ROOT, 'data')),
+
   authToken,
   authTokenGenerated,
 
@@ -78,4 +83,5 @@ export const config = {
 
 export function ensureDirs() {
   if (!fs.existsSync(config.mediaRoot)) fs.mkdirSync(config.mediaRoot, { recursive: true });
+  if (!fs.existsSync(config.dataDir)) fs.mkdirSync(config.dataDir, { recursive: true });
 }

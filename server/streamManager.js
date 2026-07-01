@@ -6,6 +6,7 @@ import fsp from 'fs/promises';
 import { ContinuousStream } from './continuousStream.js';
 import { config } from './config.js';
 import { findSidecarSubtitles, resolveSubtitleToTemp, removeTempSubtitle, clampFontSize, subtitlesFilterAvailable } from './subtitles.js';
+import { loadState, saveState, saveStateNow } from './store.js';
 
 /**
  * One auto-filling queue. It draws random movies from a library folder, keeps
@@ -41,8 +42,142 @@ export class StreamManager {
     this.subtitles = new Map();
     this.subtitleFontSize = clampFontSize(process.env.SUBTITLE_FONT_SIZE, 20); // global on-screen size
 
-    // Auto-load the default library on boot so it "just plays" out of the box.
-    if (config.libraryDir) this.setLibrary(config.libraryDir).catch((e) => console.error('library load:', e.message));
+    this._liveOffset = 0;         // last-known position (s) in the current movie, for crash-resume
+    this._persistTimer = null;    // heartbeat that keeps _liveOffset + state fresh while streaming
+    this._restoring = false;      // suppress persistence while restore() rebuilds state
+
+    // NB: the default library is loaded (or the saved state restored) by
+    // restore(), called once from the server boot — not here — so a persisted
+    // queue/settings isn't clobbered by a fresh auto-load.
+  }
+
+  // ---- persistence ---------------------------------------------------------
+
+  // Everything worth surviving a restart. Subtitle picks keep their source path
+  // (not the temp copy, which is regenerated on load). currentOffset lets an
+  // auto-resume pick the movie back up near where it stopped.
+  _snapshot() {
+    return {
+      version: 1,
+      library: { folder: this.library.folder, minMovieMB: this.minMovieMB },
+      excluded: [...this.excluded],
+      order: this.order,
+      autoRestart: this.autoRestart,
+      subtitleFontSize: this.subtitleFontSize,
+      subtitles: [...this.subtitles].map(([file, c]) => [file, { kind: c.kind, path: c.path, label: c.label }]),
+      queue: [...this.queue],
+      stream: {
+        wasStreaming: !!this.stream,
+        paused: this.paused,
+        rtmpUrl: this.lastRtmpUrl,
+        options: this.lastOptions,
+        currentFile: this.currentFile,
+        currentOffset: Math.max(0, Math.floor(this._liveOffset || 0)),
+        resumePoint: this.resumePoint,
+      },
+      lastIncident: this.lastIncident,
+    };
+  }
+
+  // Queue a debounced save of the current snapshot (no-op while restoring).
+  _persist() {
+    if (this._restoring) return;
+    try { saveState(this._snapshot()); } catch { /* persistence is best-effort */ }
+  }
+
+  // While streaming, tick every few seconds to keep the remembered position
+  // current so a crash/reboot can resume close to where it stopped.
+  _startPersistHeartbeat() {
+    if (this._persistTimer) return;
+    this._persistTimer = setInterval(() => {
+      if (!this.stream) return;
+      try { this._liveOffset = this.stream.getResumeState().offset || 0; } catch {}
+      this._persist();
+    }, 5000);
+    if (this._persistTimer.unref) this._persistTimer.unref();
+  }
+
+  _stopPersistHeartbeat() {
+    if (this._persistTimer) { clearInterval(this._persistTimer); this._persistTimer = null; }
+  }
+
+  // Load persisted state on boot and bring the app back to where it was: same
+  // library, queue, parked files, subtitle picks and settings — and, if it was
+  // live when it stopped, auto-resume the stream near the point it left off.
+  async restore() {
+    let st = null;
+    try { st = loadState(); } catch {}
+    this._restoring = true;
+    try {
+      // Library first (this rebuilds a fresh queue + clears subtitles), then we
+      // overlay the saved queue/subtitles/settings on top.
+      const folder = (st && st.library && st.library.folder) || config.libraryDir;
+      const minMB = st && st.library && Number.isFinite(st.library.minMovieMB) ? st.library.minMovieMB : this.minMovieMB;
+      if (folder) {
+        try { await this.setLibrary(folder, minMB); } catch (e) { console.error('library load:', e.message); }
+      }
+      if (st) {
+        this.excluded = new Set(Array.isArray(st.excluded) ? st.excluded : []);
+        this.order = st.order === 'sequential' ? 'sequential' : 'shuffle';
+        this.autoRestart = st.autoRestart !== false;
+        this.subtitleFontSize = clampFontSize(st.subtitleFontSize, this.subtitleFontSize);
+        // Restore the exact upcoming order (drop files that no longer exist).
+        if (Array.isArray(st.queue) && st.queue.length) {
+          this.queue = st.queue.filter((f) => { try { return fs.existsSync(f); } catch { return false; } });
+        }
+        // Re-resolve each subtitle pick to a fresh temp copy for the filtergraph.
+        for (const [file, c] of Array.isArray(st.subtitles) ? st.subtitles : []) {
+          if (c && c.kind === 'file' && c.path) {
+            try {
+              const safePath = resolveSubtitleToTemp(c.path);
+              this.subtitles.set(file, { kind: 'file', path: c.path, label: c.label || 'Subtitles', safePath });
+            } catch { /* subtitle source gone/unreadable — skip this pick */ }
+          }
+        }
+        this.lastRtmpUrl = (st.stream && st.stream.rtmpUrl) || null;
+        this.lastOptions = (st.stream && st.stream.options) || null;
+        this.lastIncident = st.lastIncident || null;
+        this.resumePoint = (st.stream && st.stream.resumePoint) || null;
+        this.paused = !!(st.stream && st.stream.paused);
+      }
+    } finally {
+      this._restoring = false;
+    }
+
+    this.io.emit('library:updated', this.getLibrary());
+    this.io.emit('queue:updated', this.getQueue());
+
+    // Auto-resume: if it was live when it stopped, reconnect to the same target
+    // and pick the current movie back up near where it left off.
+    if (st && st.stream && st.stream.wasStreaming && this.lastRtmpUrl && this.queue.length) {
+      const cf = st.stream.currentFile;
+      const off = Math.max(0, Math.floor(Number(st.stream.currentOffset) || 0));
+      if (cf) {
+        const idx = this.queue.indexOf(cf);
+        if (idx > 0) this.queue.splice(idx, 1);
+        if (idx !== 0) this.queue.unshift(cf);
+      }
+      const opts = { ...(this.lastOptions || {}), startTime: off || null };
+      this.paused = false;
+      this.resumePoint = null;
+      try {
+        await this.startQueue(this.lastRtmpUrl, opts);
+        console.log(`auto-resumed stream${cf ? ` at ${path.basename(cf)} +${off}s` : ''}`);
+      } catch (e) {
+        console.error('auto-resume failed:', e.message);
+      }
+    }
+    this._persist();
+    return this.getQueue();
+  }
+
+  // Flush state to disk synchronously (called on shutdown). Sample the freshest
+  // position first so a graceful restart resumes right where it left off.
+  persistNow() {
+    try {
+      if (this.stream) { try { this._liveOffset = this.stream.getResumeState().offset || 0; } catch {} }
+      saveStateNow(this._snapshot());
+    } catch {}
   }
 
   // ---- library scan (async, depth-limited, symlink-safe) -------------------
@@ -81,6 +216,7 @@ export class StreamManager {
     this._clearAllSubtitles(); // picks referenced the old library's files
 
     this._refill();
+    this._persist();
     this.io.emit('library:updated', this.getLibrary());
     this.io.emit('queue:updated', this.getQueue());
     // Probe durations in the background; emits library/queue updates as they fill.
@@ -121,6 +257,7 @@ export class StreamManager {
     } else if (!this.excluded.delete(file)) {
       return this.getLibrary(); // wasn't parked — nothing changed, skip the broadcast
     }
+    this._persist();
     this.io.emit('library:updated', this.getLibrary());
     return this.getLibrary();
   }
@@ -279,6 +416,7 @@ export class StreamManager {
     // Fresh random pull (keeps the currently-playing track at the front).
     this.queue = this.stream && this.currentFile ? [this.currentFile] : [];
     this._refill();
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }
@@ -287,6 +425,7 @@ export class StreamManager {
     if (index == null || Number.isNaN(index) || index < 0 || index > this.queue.length) this.queue.push(file);
     else this.queue.splice(index, 0, file);
     this._ensureDurations([file]).catch(() => {}); // probe it if not already cached
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }
@@ -295,6 +434,7 @@ export class StreamManager {
     if (!Number.isInteger(index) || index < 0 || index >= this.queue.length) return this.getQueue();
     this.queue.splice(index, 1);
     this._refill();
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }
@@ -306,6 +446,7 @@ export class StreamManager {
         from < 0 || from >= n || to < 0 || to >= n) return this.getQueue();
     const [m] = this.queue.splice(from, 1);
     this.queue.splice(to, 0, m);
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }
@@ -362,6 +503,7 @@ export class StreamManager {
         removeTempSubtitle(prev.safePath);
       }
     }
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }
@@ -384,7 +526,12 @@ export class StreamManager {
   // ---- streaming -----------------------------------------------------------
 
   _attachEvents(cs) {
-    cs.on('progress', (d) => this.io.emit('stream:progress', d));
+    cs.on('progress', (d) => {
+      // Remember where we are in the current movie so a crash/reboot can resume
+      // near this point (the heartbeat also samples it every few seconds).
+      if (typeof d.filePositionSec === 'number') this._liveOffset = d.filePositionSec;
+      this.io.emit('stream:progress', d);
+    });
     cs.on('ffmpeglog', (d) => this.io.emit('stream:ffmpeg', d));
     cs.on('standby', (d) => this.io.emit('stream:standby', d));
     cs.on('reconnecting', (d) => this.io.emit('stream:reconnecting', d));
@@ -398,7 +545,10 @@ export class StreamManager {
       // Terminal crash (auto-restart off) — the stream is down. Remember where the
       // movie was so the card can offer "Resume {file} at {time}".
       this._recordIncident({ reason: 'error', file: d.file, path: d.path, offset: d.offset || 0, message: d.error, streaming: false });
+      this._stopPersistHeartbeat();
+      this._liveOffset = Math.max(0, Math.floor(Number(d.offset) || 0));
       this.stream = null; this.currentFile = null; this.rtmpUrl = null;
+      this._persist(); // remember the crash point so an auto-resume can pick it up
       this.io.emit('stream:error', d);
       this.io.emit('queue:updated', this.getQueue());
     });
@@ -408,7 +558,10 @@ export class StreamManager {
       // A pause stops the stream too; let pauseQueue() own the UI signal in that
       // case so the client shows "Paused" rather than a full stop.
       if (this.paused) { this.io.emit('queue:updated', this.getQueue()); return; }
+      this._stopPersistHeartbeat();
+      this._liveOffset = 0;
       this.rtmpUrl = null;
+      this._persist();
       this.io.emit('stream:stopped', {});
       this.io.emit('queue:updated', this.getQueue());
     });
@@ -454,7 +607,10 @@ export class StreamManager {
     this.rtmpUrl = rtmpUrl;
     this._attachEvents(cs);
     this.stream = cs;
+    this._liveOffset = Number.isFinite(Number(options.startTime)) ? Math.max(0, Number(options.startTime)) : 0;
     await cs.start();
+    this._startPersistHeartbeat();
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return { streamId };
   }
@@ -466,9 +622,12 @@ export class StreamManager {
     this.paused = false;
     this.resumePoint = null;
     this.lastIncident = null; // explicit stop clears the recovery card
+    this._stopPersistHeartbeat();
+    this._liveOffset = 0;
     if (this.stream) { await this.stream.stop(); this.stream = null; }
     this.currentFile = null;
     this.rtmpUrl = null;
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
   }
 
@@ -482,9 +641,12 @@ export class StreamManager {
     // Set paused before stopping so the stream's own 'stopped' event is treated
     // as a pause (not a full stop) by the handler above.
     this.paused = true;
+    this._stopPersistHeartbeat();
+    this._liveOffset = state.offset || 0;
     await this.stream.stop();
     this.stream = null;
     this.rtmpUrl = null;
+    this._persist();
     const file = state.file ? path.basename(state.file) : null;
     this.io.emit('stream:paused', { file, offset: Math.round(state.offset || 0) });
     this.io.emit('queue:updated', this.getQueue());
@@ -519,6 +681,7 @@ export class StreamManager {
     if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
     const showTitle = this.stream.setShowTitle(show);
     this.lastOptions = { ...(this.lastOptions || {}), showTitle };
+    this._persist();
     this.io.emit('stream:title', { showTitle });
     return { showTitle };
   }
@@ -538,6 +701,8 @@ export class StreamManager {
     const secs = Math.max(0, Math.floor(Number(offset) || 0));
     const success = this.stream.seekCurrent(secs);
     if (!success) throw Object.assign(new Error('Can only seek during a movie (not the standby slate)'), { status: 400 });
+    this._liveOffset = secs;
+    this._persist();
     return { success, offset: secs };
   }
 
@@ -552,11 +717,13 @@ export class StreamManager {
       at: Date.now(),
       streaming: !!streaming,
     };
+    this._persist();
   }
 
   // Dismiss the recovery card.
   clearIncident() {
     this.lastIncident = null;
+    this._persist();
     this.io.emit('queue:updated', this.getQueue());
     return this.getQueue();
   }
@@ -591,6 +758,7 @@ export class StreamManager {
     if (options.autoRestart !== undefined) this.autoRestart = options.autoRestart !== false;
     // Keep remembered options current so a later pause/resume uses the latest.
     this.lastOptions = { ...(this.lastOptions || {}), ...options };
+    this._persist();
     this.stream.updateOptions(options);
     return { applied: true, appliesAtNextTrack: true };
   }
@@ -605,6 +773,7 @@ export class StreamManager {
   }
 
   async stopAllStreams() {
+    this._stopPersistHeartbeat();
     if (this.stream) { await this.stream.stop().catch(() => {}); this.stream = null; }
     this._clearAllSubtitles();
   }

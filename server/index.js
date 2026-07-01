@@ -211,8 +211,14 @@ httpServer.listen(config.port, config.host, () => {
     console.log(`   ${config.authToken}`);
     console.log('   Paste it into the dashboard login. Set AUTH_TOKEN in the env to make it permanent.\n');
   }
+  // Restore persisted settings/queue and, if it was live, auto-resume the stream.
+  streamManager.restore().catch((e) => console.error('restore:', e.message));
 });
 
 for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, async () => { await streamManager.stopAllStreams().catch(() => {}); process.exit(0); });
+  process.on(sig, async () => {
+    try { streamManager.persistNow(); } catch {}
+    await streamManager.stopAllStreams().catch(() => {});
+    process.exit(0);
+  });
 }

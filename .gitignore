@@ -6,6 +6,9 @@ client/node_modules/
 client/dist/
 client/build/
 
+# Persisted runtime state (settings/queue/stream — survives restarts)
+data/
+
 # Logs
 *.log
 npm-debug.log*
