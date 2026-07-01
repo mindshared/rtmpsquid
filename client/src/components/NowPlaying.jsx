@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { niceName, elapsed, liveRate, parseHMS } from '../lib/format';
+import { niceName, elapsed, liveRate, parseHMS, formatHMS } from '../lib/format';
 
 // The live "now playing" hero: status badge, current title, target vs measured
 // bitrate, next track, and the transport controls (Next / Pause / Stop / Jump).
@@ -10,6 +10,10 @@ export default function NowPlaying({ status, currentFile, nextTrack, showTitle, 
   const label = reconnecting ? 'RECONNECTING' : standby ? 'STANDBY' : 'LIVE';
   const live = liveRate(status?.progress?.instBitrate || status?.progress?.bitrate);
   const speed = status?.progress?.speed;
+  // Position within the current movie (seconds); null on the standby slate. This
+  // is "where we are in this file", not total session uptime (progress.timeMs).
+  const filePos = status?.progress?.filePositionSec;
+  const hasPos = typeof filePos === 'number' && !standby;
   const [jump, setJump] = useState('');
   const canSeek = onSeek && !standby && !reconnecting;
   const doSeek = () => {
@@ -53,7 +57,9 @@ export default function NowPlaying({ status, currentFile, nextTrack, showTitle, 
         </div>
       </div>
       <div className="np-side">
-        <div className="np-time">{elapsed(status?.progress?.timeMs)}</div>
+        <div className="np-time" title={hasPos ? 'Position in the current movie' : 'Total time streamed this session'}>
+          {hasPos ? formatHMS(filePos) : elapsed(status?.progress?.timeMs)}
+        </div>
         <button
           className="btn btn-secondary btn-small"
           onClick={onNext}
