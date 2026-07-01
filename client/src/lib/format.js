@@ -42,6 +42,34 @@ export const fmtDuration = (sec) => {
   return h ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`;
 };
 
+// Parse a user-typed timestamp into whole seconds. Accepts "H:MM:SS", "M:SS",
+// or bare seconds ("90"); tolerates loose values ("1:90" -> 150s). Returns null
+// for empty/garbage so callers can fall back. Never negative.
+export const parseHMS = (str) => {
+  if (str == null) return null;
+  const t = String(str).trim();
+  if (t === '') return null;
+  const parts = t.split(':').map((p) => p.trim());
+  if (parts.length > 3) return null;
+  let total = 0;
+  for (const p of parts) {
+    if (p === '' || !/^\d+(\.\d+)?$/.test(p)) return null;
+    total = total * 60 + parseFloat(p);
+  }
+  return total >= 0 ? Math.floor(total) : null;
+};
+
+// seconds -> zero-padded "H:MM:SS" (always shows hours), for prefilling an
+// editable time field. '' for invalid/negative.
+export const formatHMS = (sec) => {
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return '';
+  const s = Math.floor(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  return `${h}:${String(m).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+};
+
 // ffmpeg reports the live streamer throughput as e.g. "1234.5kbits/s" (or "N/A"
 // before the first frame). Normalise to a tidy "1235k" or null.
 export const liveRate = (raw) => {

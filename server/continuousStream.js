@@ -190,6 +190,8 @@ export class ContinuousStream extends EventEmitter {
 
     this._intentionalSkip = false; // set when the user hits Next, so the early
                                    // feeder exit isn't logged as an unreadable skip
+    this._seeking = false;         // set by seekCurrent() so the feeder exit re-feeds
+                                   // the SAME file at a new offset instead of advancing
     this._consecFails = 0;         // consecutive instant feeder failures (for backoff)
 
     // Raw-ffmpeg visibility: a rolling ring of recent status ticks + stderr
@@ -436,11 +438,20 @@ export class ContinuousStream extends EventEmitter {
       console.error(`[${this.id}] streamer exited code=${code} sig=${signal} after ${Math.round(aliveMs / 1000)}s\n${stderrTail}`);
 
       if (!this.autoRestart) {
-        // Recovery disabled by the user — end the stream cleanly. Stop the feed
-        // loop first so no late feeder exit can respawn one.
+        // Recovery disabled by the user — end the stream cleanly. Capture where the
+        // current movie was so the dashboard can offer to resume it there. Stop the
+        // feed loop first so no late feeder exit can respawn one.
+        const offset = this.feederKind === 'content' ? Math.round(this._currentContentOffset()) : 0;
+        const crashedFile = this.currentFile;
         this.stopping = true;
         this.status = 'error';
-        this.emit('error', { streamId: this.id, error: `Stream ended: ${stderrTail.split('\n').slice(-3).join(' ')}` });
+        this.emit('error', {
+          streamId: this.id,
+          error: `Stream ended: ${stderrTail.split('\n').slice(-3).join(' ')}`,
+          file: crashedFile ? path.basename(crashedFile) : null,
+          path: crashedFile || null,
+          offset,
+        });
         this._cleanup();
         return;
       }
@@ -642,12 +653,29 @@ export class ContinuousStream extends EventEmitter {
     proc.on('exit', (code) => {
       if (this.stopping || this.feeder !== proc) return;
       const intentional = this._intentionalSkip;
+      const seeking = this._seeking;
       this._intentionalSkip = false;
+      this._seeking = false;
       this.feeder = null;
+      if (seeking) {
+        // Live seek: re-feed the SAME file at the offset seekCurrent() stashed in
+        // _resumeSeek. Not a failure — don't log a skip or touch the backoff.
+        this._consecFails = 0;
+        this._feedResume();
+        return;
+      }
       if (kind === 'content' && code !== 0 && !intentional) {
-        // Bad/corrupt file — log and skip, but keep the stream alive.
-        console.error(`[${this.id}] feeder failed for ${file} (code=${code}): ${errTail.trim()}`);
-        this.emit('fileskipped', { streamId: this.id, file: file ? path.basename(file) : null });
+        // Bad/corrupt file — log and skip, but keep the stream alive. Include how
+        // far it got so the dashboard can offer to resume it at that point.
+        const offset = Math.round(this._currentContentOffset());
+        console.error(`[${this.id}] feeder failed for ${file} (code=${code}) at ~${offset}s: ${errTail.trim()}`);
+        this.emit('fileskipped', {
+          streamId: this.id,
+          file: file ? path.basename(file) : null,
+          path: file || null,
+          offset,
+          message: errTail.trim().split('\n').slice(-1)[0] || `exit code ${code}`,
+        });
         this._consecFails++;
       } else {
         this._consecFails = 0; // a clean finish, intentional skip, or slate resets backoff
@@ -666,6 +694,18 @@ export class ContinuousStream extends EventEmitter {
   skip() {
     if (this.stopping || this.feederKind !== 'content' || !this.feeder) return false;
     this._intentionalSkip = true;
+    try { this.feeder.kill('SIGKILL'); } catch {}
+    return true;
+  }
+
+  // Jump the CURRENTLY-PLAYING movie to a new position (seconds), live. We stash
+  // the target in _resumeSeek and kill the feeder; its exit handler (seeing
+  // _seeking) re-feeds the SAME file at that offset. The persistent streamer/RTMP
+  // connection is untouched, so viewers never reconnect — the picture just jumps.
+  seekCurrent(offset) {
+    if (this.stopping || this.feederKind !== 'content' || !this.feeder || !this.currentFile) return false;
+    this._resumeSeek = Math.max(0, Number(offset) || 0);
+    this._seeking = true;
     try { this.feeder.kill('SIGKILL'); } catch {}
     return true;
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { basename, niceName, elapsed, liveRate, normalizeBitrate, fmtDuration, fmtBytes } from './format';
+import { basename, niceName, elapsed, liveRate, normalizeBitrate, fmtDuration, fmtBytes, parseHMS, formatHMS } from './format';
 
 describe('basename', () => {
   it('handles / and \\ separators', () => {
@@ -30,6 +30,44 @@ describe('elapsed', () => {
   });
   it('clamps negatives', () => {
     expect(elapsed(-5000)).toBe('00:00:00');
+  });
+});
+
+describe('parseHMS', () => {
+  it('parses H:MM:SS, M:SS, and bare seconds', () => {
+    expect(parseHMS('1:23:45')).toBe(5025);
+    expect(parseHMS('4:05')).toBe(245);
+    expect(parseHMS('90')).toBe(90);
+    expect(parseHMS('0:00:00')).toBe(0);
+  });
+  it('tolerates whitespace and loose values', () => {
+    expect(parseHMS('  2:00  ')).toBe(120);
+    expect(parseHMS('1:90')).toBe(150); // 1*60 + 90
+    expect(parseHMS('12.5')).toBe(12); // floors fractional seconds
+  });
+  it('returns null for empty/garbage/too many parts', () => {
+    expect(parseHMS('')).toBeNull();
+    expect(parseHMS('   ')).toBeNull();
+    expect(parseHMS(null)).toBeNull();
+    expect(parseHMS('abc')).toBeNull();
+    expect(parseHMS('1:2:3:4')).toBeNull();
+    expect(parseHMS('1::2')).toBeNull();
+  });
+});
+
+describe('formatHMS', () => {
+  it('renders zero-padded H:MM:SS', () => {
+    expect(formatHMS(5025)).toBe('1:23:45');
+    expect(formatHMS(245)).toBe('0:04:05');
+    expect(formatHMS(0)).toBe('0:00:00');
+  });
+  it('round-trips with parseHMS', () => {
+    for (const s of [0, 5, 65, 3661, 5025, 86399]) expect(parseHMS(formatHMS(s))).toBe(s);
+  });
+  it('returns empty for invalid', () => {
+    expect(formatHMS(-1)).toBe('');
+    expect(formatHMS(null)).toBe('');
+    expect(formatHMS(NaN)).toBe('');
   });
 });
 

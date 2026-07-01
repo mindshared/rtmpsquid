@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { api } from '../api';
-import { basename, dirname } from '../lib/format';
+import { basename, dirname, formatHMS } from '../lib/format';
 import { useLibrary } from '../hooks/useLibrary';
 import { useEncoderSettings } from '../hooks/useEncoderSettings';
 import { useFfmpegLog } from '../hooks/useFfmpegLog';
@@ -15,6 +15,7 @@ import SettingsDrawer from './SettingsDrawer';
 import FfmpegLogPanel from './FfmpegLogPanel';
 import FolderBrowser from './FolderBrowser';
 import SubtitlePicker from './SubtitlePicker';
+import RecoveryCard from './RecoveryCard';
 
 // Stable empty array so `queue?.files || EMPTY` keeps a constant reference when
 // there's no queue — otherwise a fresh [] each render busts the useMemo below.
@@ -156,9 +157,29 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
     call(() => api.post('/api/queue/pause'), 'Pause').then((d) => {
       if (d) notify?.('Paused — you can change settings, then Resume');
     });
-  const resume = () =>
-    call(() => api.post('/api/queue/resume'), 'Resume').then((d) => {
-      if (d) notify?.('Resuming where you left off');
+  // resume/recover take an optional exact offset (seconds) from an H:M:S field.
+  const resume = (offset) =>
+    call(() => api.post('/api/queue/resume', offset != null ? { offset } : {}), 'Resume').then((d) => {
+      if (d) notify?.(offset != null ? `Resuming at ${formatHMS(offset)}` : 'Resuming where you left off');
+    });
+  // Live jump: move the currently-playing movie to an exact time (no reconnect).
+  const seekTo = (offset) =>
+    call(() => api.post('/api/queue/seek', { offset }), 'Jump').then((d) => {
+      if (d?.success) notify?.(`Jumped to ${formatHMS(d.offset)}`);
+    });
+  // Recovery card actions: resume the crashed movie at a time, re-queue a skipped
+  // one to play next, or dismiss the card.
+  const recover = (offset) =>
+    call(() => api.post('/api/queue/recover', offset != null ? { offset } : {}), 'Resume').then((d) => {
+      if (d) notify?.(offset != null ? `Resuming at ${formatHMS(offset)}` : 'Resuming the movie');
+    });
+  const dismissIncident = () => call(() => api.post('/api/queue/incident/clear'), 'Dismiss');
+  const requeueIncident = (path) =>
+    addAt(path, currentIndex >= 0 ? currentIndex + 1 : 0).then((d) => {
+      if (d) {
+        notify?.(`${basename(path)} will play next`);
+        dismissIncident();
+      }
     });
 
   // "Apply" is the only thing that pushes settings to a running stream (next
@@ -209,6 +230,17 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
       ) : (
         <div className="player-grid">
           <main className="player-body scrollable">
+            {queue.lastIncident && (
+              <ErrorBoundary label="Recovery" compact>
+                <RecoveryCard
+                  incident={queue.lastIncident}
+                  streaming={streaming}
+                  onRecover={recover}
+                  onRequeue={requeueIncident}
+                  onDismiss={dismissIncident}
+                />
+              </ErrorBoundary>
+            )}
             {streaming && (
               <ErrorBoundary label="Now playing" compact>
                 <NowPlaying
@@ -219,6 +251,7 @@ export default function Dashboard({ socket, queue, streamStatus, setQueue, notif
                   onStop={stop}
                   onNext={skipNext}
                   onPause={pause}
+                  onSeek={seekTo}
                   onToggleTitle={toggleTitle}
                 />
               </ErrorBoundary>

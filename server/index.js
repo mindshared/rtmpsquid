@@ -172,8 +172,18 @@ app.post('/api/queue/next', h(async (req, res) => { res.json(streamManager.skipC
 app.post('/api/queue/title', h((req, res) => res.json(streamManager.setShowTitle(req.body.show))));
 
 // Pause goes offline but remembers the spot; resume reconnects and picks it up.
+// resume accepts an optional { offset } (seconds) to pick up somewhere other than
+// where it paused (the editable "Resume at H:M:S" field).
 app.post('/api/queue/pause', h(async (req, res) => { res.json(await streamManager.pauseQueue()); }));
-app.post('/api/queue/resume', h(async (req, res) => { res.json({ success: true, ...(await streamManager.resumeQueue()) }); }));
+app.post('/api/queue/resume', h(async (req, res) => { res.json({ success: true, ...(await streamManager.resumeQueue(req.body?.offset)) }); }));
+
+// Jump the currently-playing movie to an exact position (seconds), live.
+app.post('/api/queue/seek', h((req, res) => res.json(streamManager.seekTo(req.body?.offset))));
+
+// Recovery card: restart the last-crashed movie at { offset } (defaults to where
+// it crashed), and dismiss the card.
+app.post('/api/queue/recover', h(async (req, res) => { res.json({ success: true, ...(await streamManager.recoverIncident(req.body?.offset)) }); }));
+app.post('/api/queue/incident/clear', h((req, res) => res.json(streamManager.clearIncident())));
 
 // Live settings push — applies at the next track boundary without dropping
 // the RTMP connection. Strips rtmpUrl/streamKey to make accidental ingest

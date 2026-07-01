@@ -23,6 +23,10 @@ export class StreamManager {
     this.rtmpUrl = null;
     this.paused = false;                          // true after pauseQueue() until resume/stop
     this.resumePoint = null;                      // { file, offset } captured at pause
+    // Last skip/crash, kept so the dashboard can show a recovery card and offer to
+    // resume the movie at the point it stopped. { reason, file, path, offset,
+    // message, at, streaming }. Cleared on a fresh start/stop or explicit dismiss.
+    this.lastIncident = null;
     this.lastRtmpUrl = null;                      // remembered for resume
     this.lastOptions = null;                      // remembered encode options for resume
     this.autoRestart = true;                      // mirrors the user's auto-restart setting
@@ -267,6 +271,7 @@ export class StreamManager {
       totalKnown, // false while some queued durations are still being probed
       subtitles: this._subtitleSummary(), // { absolutePath: { label } } for titles with burned-in subs
       subtitleFontSize: this.subtitleFontSize, // global on-screen subtitle size
+      lastIncident: this.lastIncident, // last skip/crash for the recovery card (or null)
     };
   }
 
@@ -383,8 +388,20 @@ export class StreamManager {
     cs.on('ffmpeglog', (d) => this.io.emit('stream:ffmpeg', d));
     cs.on('standby', (d) => this.io.emit('stream:standby', d));
     cs.on('reconnecting', (d) => this.io.emit('stream:reconnecting', d));
-    cs.on('fileskipped', (d) => this.io.emit('stream:fileskipped', d));
-    cs.on('error', (d) => { this.stream = null; this.currentFile = null; this.rtmpUrl = null; this.io.emit('stream:error', d); this.io.emit('queue:updated', this.getQueue()); });
+    cs.on('fileskipped', (d) => {
+      // Stream keeps playing (the next file). Remember the skip so the card can
+      // offer to re-queue that movie (optionally at a chosen time).
+      this._recordIncident({ reason: 'skipped', file: d.file, path: d.path, offset: d.offset || 0, message: d.message, streaming: true });
+      this.io.emit('stream:fileskipped', d);
+    });
+    cs.on('error', (d) => {
+      // Terminal crash (auto-restart off) — the stream is down. Remember where the
+      // movie was so the card can offer "Resume {file} at {time}".
+      this._recordIncident({ reason: 'error', file: d.file, path: d.path, offset: d.offset || 0, message: d.error, streaming: false });
+      this.stream = null; this.currentFile = null; this.rtmpUrl = null;
+      this.io.emit('stream:error', d);
+      this.io.emit('queue:updated', this.getQueue());
+    });
     cs.on('stopped', () => {
       this.stream = null;
       this.currentFile = null;
@@ -413,6 +430,7 @@ export class StreamManager {
     this.lastOptions = { ...options };
     this.autoRestart = options.autoRestart !== false;
     this.paused = false;
+    this.lastIncident = null; // a fresh start clears any stale recovery card
 
     const streamId = randomUUID();
     let first = true;
@@ -447,6 +465,7 @@ export class StreamManager {
   async stopQueue() {
     this.paused = false;
     this.resumePoint = null;
+    this.lastIncident = null; // explicit stop clears the recovery card
     if (this.stream) { await this.stream.stop(); this.stream = null; }
     this.currentFile = null;
     this.rtmpUrl = null;
@@ -473,8 +492,9 @@ export class StreamManager {
   }
 
   // Resume a paused stream: reconnect to the same destination and start the
-  // remembered file at the remembered offset.
-  async resumeQueue() {
+  // remembered file at the remembered offset. An explicit offset (seconds)
+  // overrides where we pick up — that's the editable "Resume at H:M:S" field.
+  async resumeQueue(offsetOverride) {
     if (this.stream) throw Object.assign(new Error('Already streaming'), { status: 400 });
     if (!this.paused || !this.lastRtmpUrl) throw Object.assign(new Error('Nothing to resume'), { status: 400 });
     const rp = this.resumePoint || {};
@@ -485,7 +505,8 @@ export class StreamManager {
       if (idx > 0) this.queue.splice(idx, 1);
       if (idx !== 0) this.queue.unshift(rp.file);
     }
-    const opts = { ...(this.lastOptions || {}), startTime: rp.offset ? Math.max(0, Math.floor(rp.offset)) : null };
+    const off = offsetOverride != null && Number.isFinite(Number(offsetOverride)) ? Math.max(0, Number(offsetOverride)) : rp.offset;
+    const opts = { ...(this.lastOptions || {}), startTime: off ? Math.max(0, Math.floor(off)) : null };
     this.paused = false;
     this.resumePoint = null;
     return this.startQueue(this.lastRtmpUrl, opts);
@@ -506,6 +527,59 @@ export class StreamManager {
   skipCurrent() {
     if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
     return { success: this.stream.skip() };
+  }
+
+  // ---- seek + incident recovery --------------------------------------------
+
+  // Jump the currently-playing movie to an exact position (seconds), live — no
+  // reconnect. Used by the "Jump to H:M:S" control.
+  seekTo(offset) {
+    if (!this.stream) throw Object.assign(new Error('Not streaming'), { status: 400 });
+    const secs = Math.max(0, Math.floor(Number(offset) || 0));
+    const success = this.stream.seekCurrent(secs);
+    if (!success) throw Object.assign(new Error('Can only seek during a movie (not the standby slate)'), { status: 400 });
+    return { success, offset: secs };
+  }
+
+  // Remember a skip/crash and push it to the dashboard.
+  _recordIncident({ reason, file, path: filePath, offset, message, streaming }) {
+    this.lastIncident = {
+      reason,
+      file: file || (filePath ? path.basename(filePath) : null),
+      path: filePath || null,
+      offset: Math.max(0, Math.floor(Number(offset) || 0)),
+      message: message ? String(message).slice(0, 300) : null,
+      at: Date.now(),
+      streaming: !!streaming,
+    };
+  }
+
+  // Dismiss the recovery card.
+  clearIncident() {
+    this.lastIncident = null;
+    this.io.emit('queue:updated', this.getQueue());
+    return this.getQueue();
+  }
+
+  // Resume the last-crashed movie: put it at the front and start the stream at the
+  // requested offset (defaults to where it crashed), reusing the remembered
+  // destination + encode options. Only valid when stopped — while live, the
+  // dashboard uses seekTo / re-queue instead.
+  async recoverIncident(offset) {
+    if (this.stream) throw Object.assign(new Error('Already streaming — use seek or re-queue instead'), { status: 400 });
+    const inc = this.lastIncident;
+    if (!inc || !inc.path) throw Object.assign(new Error('Nothing to recover'), { status: 400 });
+    if (!this.lastRtmpUrl) throw Object.assign(new Error('No remembered destination — press Go Live'), { status: 400 });
+    const file = inc.path;
+    const idx = this.queue.indexOf(file);
+    if (idx > 0) this.queue.splice(idx, 1);
+    if (idx !== 0) this.queue.unshift(file);
+    const secs = offset != null && Number.isFinite(Number(offset)) ? Math.max(0, Math.floor(Number(offset))) : inc.offset;
+    const opts = { ...(this.lastOptions || {}), startTime: secs || null };
+    this.lastIncident = null;
+    this.paused = false;
+    this.resumePoint = null;
+    return this.startQueue(this.lastRtmpUrl, opts);
   }
 
   // Live settings update — applies at the next file boundary so the RTMP

@@ -1,14 +1,23 @@
-import { niceName, elapsed, liveRate } from '../lib/format';
+import { useState } from 'react';
+import { niceName, elapsed, liveRate, parseHMS } from '../lib/format';
 
 // The live "now playing" hero: status badge, current title, target vs measured
-// bitrate, next track, and the transport controls (Next / Pause / Stop).
-export default function NowPlaying({ status, currentFile, nextTrack, showTitle, onStop, onNext, onPause, onToggleTitle }) {
+// bitrate, next track, and the transport controls (Next / Pause / Stop / Jump).
+export default function NowPlaying({ status, currentFile, nextTrack, showTitle, onStop, onNext, onPause, onSeek, onToggleTitle }) {
   const s = status?.status || 'streaming';
   const standby = s === 'standby';
   const reconnecting = s === 'reconnecting';
   const label = reconnecting ? 'RECONNECTING' : standby ? 'STANDBY' : 'LIVE';
   const live = liveRate(status?.progress?.instBitrate || status?.progress?.bitrate);
   const speed = status?.progress?.speed;
+  const [jump, setJump] = useState('');
+  const canSeek = onSeek && !standby && !reconnecting;
+  const doSeek = () => {
+    const secs = parseHMS(jump);
+    if (secs == null) return;
+    onSeek(secs);
+    setJump('');
+  };
   return (
     <div className={`nowplaying ${standby ? 'is-standby' : ''} ${reconnecting ? 'is-reconnecting' : ''}`}>
       <div className="np-art">{standby ? '🌙' : '🦑'}</div>
@@ -73,6 +82,24 @@ export default function NowPlaying({ status, currentFile, nextTrack, showTitle, 
         <button className="btn btn-danger btn-small" onClick={onStop}>
           Stop
         </button>
+        {canSeek && (
+          <div className="np-jump" title="Jump the current movie to an exact time (H:MM:SS)">
+            <input
+              className="time-input"
+              type="text"
+              inputMode="numeric"
+              placeholder="H:MM:SS"
+              value={jump}
+              onChange={(e) => setJump(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') doSeek();
+              }}
+            />
+            <button className="btn btn-secondary btn-small" onClick={doSeek} disabled={parseHMS(jump) == null}>
+              ⇥ Jump
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

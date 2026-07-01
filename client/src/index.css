@@ -1248,6 +1248,75 @@ code {
   border-radius: 4px;
 }
 
+/* Exact-time (H:MM:SS) input, shared by the jump / resume / recovery controls. */
+.time-input {
+  width: 8ch;
+  background: #0f0f0f;
+  border: 1px solid #333;
+  border-radius: 5px;
+  color: #eee;
+  padding: 0.28rem 0.4rem;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.time-input:focus {
+  outline: none;
+  border-color: #00c020;
+}
+.np-jump {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+/* Recovery card — surfaces a skip/crash and offers to resume at the stop time. */
+.recovery-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  background: #241a06;
+  border: 1px solid #6b5410;
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  margin-bottom: 1rem;
+}
+.rc-main {
+  min-width: 0;
+  flex: 1;
+}
+.rc-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: #f0c04a;
+  text-transform: uppercase;
+}
+.rc-title {
+  font-size: 1.05rem;
+  color: #fff;
+  margin: 0.15rem 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rc-meta {
+  font-size: 0.82rem;
+  color: #cbb884;
+}
+.rc-msg {
+  color: #a99a6a;
+}
+.rc-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
 /* Subtitle picker modal */
 .sub-list {
   display: flex;
