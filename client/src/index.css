@@ -1184,7 +1184,7 @@ code {
   background: #161616;
 }
 .track:hover .track-handle,
-.track:hover .track-actions {
+.track:hover .icon-btn.danger {
   opacity: 1;
 }
 .track.playing {
@@ -1223,7 +1223,7 @@ code {
    — otherwise the reorder grip and CC/remove buttons would be invisible. */
 @media (hover: none) {
   .track-handle,
-  .track-actions {
+  .icon-btn.danger {
     opacity: 1;
   }
 }
@@ -1322,7 +1322,13 @@ code {
   display: flex;
   flex-direction: column;
   gap: 0.3rem;
+  /* Scroll long lists (some movies have 20+ sidecar subtitles) instead of
+     overflowing off-screen. min-height:0 lets the flex child shrink so it
+     scrolls within the modal on short screens too. */
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 40vh;
+  overflow-y: auto;
 }
 .sub-row {
   display: flex;
@@ -1432,8 +1438,14 @@ code {
 .track-actions {
   display: flex;
   gap: 0.25rem;
-  opacity: 0;
   flex: none;
+}
+/* CC stays visible so subtitles are easy to find; the remove (✕) is revealed on
+   hover (or always on touch, via the @media (hover:none) rule above) to avoid
+   accidental deletions. */
+.icon-btn.danger {
+  opacity: 0;
+  transition: opacity 0.15s ease;
 }
 .icon-btn {
   background: none;
