@@ -37,7 +37,7 @@ export function socketAuth(socket, next) {
  * Returns the real, absolute path, or throws if it escapes the root (covers
  * `..` traversal and symlinks that point outside the tree).
  */
-export function resolveWithinRoot(userPath, { mustExist = true } = {}) {
+export function resolveWithinRoot(userPath, { mustExist = true, realpath = true } = {}) {
   if (!userPath || typeof userPath !== 'string') {
     const err = new Error('Path is required');
     err.status = 400;
@@ -66,7 +66,11 @@ export function resolveWithinRoot(userPath, { mustExist = true } = {}) {
     err.status = 403;
     throw err;
   }
-  return real;
+  // Confinement is always verified against the physical (realpath) location, but
+  // callers that key data by the same path the library/queue uses want the
+  // logical (symlinks-intact) path back — the queue is built from path.join, not
+  // realpath, so a realpath'd key wouldn't match. realpath:false returns that.
+  return realpath ? real : candidate;
 }
 
 // Validate that a stream target is an RTMP(S) URL and nothing else (no file:,

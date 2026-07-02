@@ -135,12 +135,14 @@ app.post('/api/queue/reorder', (req, res) => res.json(streamManager.reorderQueue
 // Per-title subtitles. GET lists the auto-detected options for a file; POST sets
 // (or clears) the burned-in subtitle and optionally the global font size.
 app.get('/api/subtitles', h((req, res) => {
-  const file = resolveWithinRoot(req.query.filePath);
+  // Key by the logical (queue) path so the picker's current-selection lookup and
+  // the feeder both find it; confinement is still checked against the realpath.
+  const file = resolveWithinRoot(req.query.filePath, { realpath: false });
   res.json(streamManager.getSubtitleOptions(file));
 }));
 
 app.post('/api/queue/subtitle', h((req, res) => {
-  const file = resolveWithinRoot(req.body.filePath);
+  const file = resolveWithinRoot(req.body.filePath, { realpath: false });
   // A missing `choice` key means "font size only — leave the pick alone"; an
   // explicit null clears it; an object sets it.
   const changeChoice = Object.prototype.hasOwnProperty.call(req.body, 'choice');
